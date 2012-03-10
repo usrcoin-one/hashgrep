@@ -65,7 +65,7 @@ class CuckooHashtable {
         return (index ^ (tag * 0x5bd1e995)) & INDEXMASK;
     }
 
-    inline uint32_t ReadTag(const size_t i, const size_t j) {
+    inline uint32_t ReadTag(const size_t i, const size_t j) const {
         size_t offset = num_tagbits * j;
         uint32_t v = *(uint32_t *) (buckets_[i].tagbits_ + offset / 8);
         v = (v >> (offset & 0x7)) & TAGMASK;
@@ -139,12 +139,59 @@ template <typename KeyType, typename ValueType, size_t num_tagbits, size_t num_i
 Status 
 CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits>::Put(const KeyType key, const ValueType v) {
 
-    size_t i = IndexHash((char*) &key);
     uint32_t tag = TagHash((char*) &key);
+
+    size_t i1 = IndexHash((char*) &key);
+    size_t i2 = AltIndex(i1, tag);
+
+    size_t i = 0;
+    size_t k = bucket_size;
+
+    for (size_t j = 0; j < bucket_size; j ++) {
+        uint32_t t;
+
+        t = ReadTag(i1, j);
+        if (t == tag) {
+            WriteValue(i1, j, v);
+            num_keys_ ++;
+            return Ok;
+        } else if (t == 0) {
+            i = i1;
+            k = j;
+        }
+        
+        t = ReadTag(i2, j);
+        if (t == tag) {
+            WriteValue(i2, j, v);
+            num_keys_ ++;
+            return Ok;
+        } else if (t == 0) {
+            i = i2;
+            k = j;
+        }        
+    }
+    // found a empty slot
+    if (k < bucket_size) {
+        WriteTag(i, k, tag);
+        WriteValue(i, k, v);
+        num_keys_ ++;
+        return Ok;
+    }
+        
+    i = i1;
     ValueType val = v;
-   
-    for (uint32_t count = 0; count < MAX_CUCKOO_COUNT; count ++) {
-        //printf("cout = %u, i = %zu \n", count, i);
+
+    for (size_t count = 0; count < MAX_CUCKOO_COUNT; count ++) {
+        size_t j = rand() % bucket_size;
+        uint32_t oldtag = ReadTag(i, j);
+        ValueType oldval = ReadValue(i, j);
+        WriteTag(i, j, tag);
+        WriteValue(i, j, val);
+        
+        tag = oldtag;
+        val = oldval;
+        i = AltIndex(i, tag);
+
         for (size_t j = 0; j < bucket_size; j ++) {
 
             if (ReadTag(i, j) == 0) {
@@ -154,21 +201,7 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits>::Put(const KeyTy
                 return Ok;
             }
         }
-
-        if (count > 0) {
-            size_t j = rand() % bucket_size;
-            uint32_t oldtag = ReadTag(i, j);
-            ValueType oldval = ReadValue(i, j);
-            WriteTag(i, j, tag);
-            WriteValue(i, j, val);
-
-            tag = oldtag;
-            val = oldval;
-
-        }
-
-        i = AltIndex(i, tag);
-    }
+    } 
 
     return NotEnoughSpace;
 }
@@ -177,7 +210,6 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits>::Put(const KeyTy
 template <typename KeyType, typename ValueType, size_t num_tagbits, size_t num_indexbits>
 Status 
 CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits>::Get(const KeyType key, ValueType& val) const {
-    bool found = false;
     size_t i1, i2;
 
     uint32_t tag = TagHash((char*) &key);

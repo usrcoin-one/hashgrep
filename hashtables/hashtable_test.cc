@@ -10,8 +10,9 @@ std::mt19937 engine;
 int
 main() {
 
-    const size_t idxbits = 20;
-    auto HT = new CuckooHashtable<uint64_t, uint32_t, 16, idxbits>;
+    const size_t idxbits = 10;
+
+    CuckooHashtable<uint64_t, char*, 16, idxbits> HT;
 
     for (size_t i = 0; i  < 4 * (1<< idxbits); i ++) {
         uint64_t key;
@@ -20,12 +21,19 @@ main() {
         kbuf[1] = engine();
 
         //printf("data = 0x%x %x\n", kbuf[0], kbuf[1]);
-        uint32_t val = i;
-        if (HT->Put(key, val) != Ok) {
-            cout << "can not put" << endl;
+        char* val = new char[i+1];
+        printf("val = 0x%p\n", val);
+        if (HT.Put(key, val) != Ok) {
+            cout << i << " can not put" << endl;
             break;
         }
+        char* newval;
+        if (HT.Get(key, newval) != Ok) {
+            cout << "can not get" << endl;
+            break;
+        }
+        printf("newval = 0x%p\n", newval);
     }
-    cout << HT->Info() << endl;
+    cout << HT.Info() << endl;
 
 }

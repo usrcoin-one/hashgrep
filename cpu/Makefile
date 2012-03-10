@@ -8,8 +8,8 @@ ifeq ($(firstword $(filter Darwin,$(UNAME))),Darwin)
 endif
 
 # Uncomment one of the following to switch between debug and opt mode
-#OPT = -std=c++0x -O3 -DNDEBUG
-OPT = -std=c++0x -g -ggdb
+OPT = -std=c++0x -O3 -DNDEBUG
+#OPT = -std=c++0x -g -ggdb
 
 CFLAGS += -Wall -c -I. -I./include -I/usr/include/ $(OPT)
 

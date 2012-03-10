@@ -31,6 +31,8 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 #include <sys/time.h>
 #include <sys/mman.h>
 #include <xmmintrin.h>
+#include <random>
+
 #include "hashgrep.h"
 
 
@@ -50,14 +52,17 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 #define TIME(label, statement) statement
 #endif
 
+
 using namespace std;
+
+mt19937 engine;
 
 Filter::Filter() {}
 
 Filter::~Filter() {}
 
 
-Filter::updateHashes(u_int8_t nextChar)
+void Filter::updateHashes(u_int8_t nextChar)
 {
     if (nextChar & 0x80)
     {
@@ -67,7 +72,7 @@ Filter::updateHashes(u_int8_t nextChar)
     hash.update(nextChar);
 }
 
-Filter::operator<<(string& pattern) throw(FilterError)
+Filter& Filter::operator<<(string& pattern) throw(FilterError)
 {
     if (pattern.length() < DEF_PATT_LEN) {
         return *this;
@@ -80,12 +85,30 @@ Filter::operator<<(string& pattern) throw(FilterError)
         updateHashes(pattern[i]);
     }
 
-    uint32_t kbuf[2];
-    kbuf[0] = hash.hval1();
-    kbuf[1] = hash.hval2();
-    Value key( (char *)kbuf, sizeof(kbuf) );
-    hashfilter.Add(key);
-    assert(hashfilter.Contain(key) == Ok);
+
+   
+    //cout << hash.h << " " << pattern << endl;
+
+    char* p;
+    if (hashfilter.Get(hash.h, p) == Ok) {
+        // cout << "have seen this prefix:" << endl;
+        // char* q = p;
+        // while (q != NULL) {
+        //     cout << "\t" << q + sizeof(char*) << endl;
+        //     q = *(char**) q;
+        // }
+        
+    } else
+        p = NULL;
+
+    char* cstr = new char [pattern.size() + sizeof(char*) + 1];
+    memcpy(cstr, &p, sizeof(char*));
+    strcpy(cstr + sizeof(char*), pattern.c_str());
+
+    if (hashfilter.Put(hash.h, cstr) != Ok) {
+        throw FilterError("Error while buiding hash table");
+    }
+    //assert(hashfilter.Get(key, cstr) == Ok);
     return *this;
 }
 
@@ -118,9 +141,8 @@ void Filter::processCorpus(int fd) throw(FilterError)
 
             if (hash.is_full()) {
 
-                if (hashfilter.Get(hash.h, ) == Ok) {
-                    
-                }
+                // if (hashfilter.Get(hash.h, ) == Ok) {
+                // }
             }
         }
 
@@ -131,36 +153,46 @@ void Filter::processCorpus(int fd) throw(FilterError)
 
 int main(int argc, char* argv[])
 {
-    if (argc != 3)
+    if (argc != 2)
     {
         cerr << "Usage: "<< argv[0] <<" phrases < corpus > filtered_corpus" << endl;
         return -1;
     }
 
 
-    Filter<hash_rot_sbox_pre_2<DEF_PATT_LEN>, DEF_PATT_LEN> filter;
+    Filter filter;
 
     //
     // Generate hashfilter from phrases
     //
     ifstream inPhrases(argv[1]);
+    if (!inPhrases.is_open()) {
+        cerr << "Can not open phrase file " << argv[1] << endl;
+        exit(-1);
+    }
+
     string phrase;
     while (getline(inPhrases, phrase))
     {
         try
         {
             filter << phrase;
+            //cout << phrase << " added!!!!" << endl;
         }
         catch (FilterError& fe)
         {
             cerr << "------at phrase:" << endl;
             cerr << phrase << endl;
             cerr << "Exception " << fe.what() << endl;
+            break;
         }
     }
     inPhrases.close();
 
-    filter.printSummary(STDOUT_FILENO);
+    filter.printStatus();
+
+    exit(-1);
+    //filter.printSummary(STDOUT_FILENO);
 
     try
     {

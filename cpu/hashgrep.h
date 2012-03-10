@@ -25,12 +25,15 @@ limitations under the License.
 #include <stdint.h>
 
 #include "../hashes/hash_rot_sbox_pre_2.h"
+#include "../hashtables/cuckoohashtable.h"
 
 using namespace std;
 
 #ifndef DEF_PATT_LEN
 #define DEF_PATT_LEN 19
 #endif
+
+
 
 class FilterError
 {
@@ -49,14 +52,12 @@ class Filter
 {
     // rolling hash
     hash_rot_sbox_pre_2<DEF_PATT_LEN> hash;
-
     
-    //checks if the current hash values hit in a Bloom filter
-    bool checkInFilter(const uint8_t* vector);
-    void setBitsInFilter(uint8_t *vector);
-    uint32_t getHashValue(int i);
+    CuckooHashtable<uint64_t, char*, 16, 20> hashfilter;
 
-
+    //computes rolling hash functions
+    void updateHashes(u_int8_t nextChar);
+    
 public:
     Filter();
     ~Filter();
@@ -67,6 +68,10 @@ public:
     /* void saveFilterToFile(int fd) throw(FilterError); */
 
     void processCorpus(int fd) throw(FilterError);
+
+    void printStatus() {
+        cout << hashfilter.Info() << endl;
+    }
 };
 
 /* Handy crap for filling in templates */
