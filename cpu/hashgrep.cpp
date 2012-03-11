@@ -196,7 +196,7 @@ void Filter::processCorpus(int fd) throw(FilterError)
                 }
 
                 hit ++; //cout  << line << endl;
-                continue;
+                //continue;
                 char* p;
                 if (hashfilter.Get(hash.h, p) == Ok) {
 
