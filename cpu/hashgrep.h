@@ -61,9 +61,9 @@ class Filter
 public:
     Filter();
     ~Filter();
-    bool operator[](const string& pattern) throw(FilterError);
-    Filter& operator<<(string& pattern) throw(FilterError);
 
+    void buildFilter(char* phrasesfilename) throw(FilterError);
+    //Filter& operator<<(string& pattern) throw(FilterError);
     /* void loadFilterFromFile(int fd) throw(FilterError); */
     /* void saveFilterToFile(int fd) throw(FilterError); */
 
