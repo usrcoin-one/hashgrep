@@ -12,6 +12,7 @@
 #include <string>
 
 #include <stdint.h>
+#include <xmmintrin.h>
 
 using namespace std;
 
@@ -67,6 +68,7 @@ class CuckooHashtable {
 
     inline uint32_t ReadTag(const size_t i, const size_t j) const {
         size_t offset = num_tagbits * j;
+        _mm_prefetch(&(buckets_[i].tagbits_), _MM_HINT_NTA);
         uint32_t v = *(uint32_t *) (buckets_[i].tagbits_ + offset / 8);
         v = (v >> (offset & 0x7)) & TAGMASK;
         return v;
@@ -79,6 +81,7 @@ class CuckooHashtable {
     }
 
     inline ValueType ReadValue(const size_t i, const size_t j) const {
+        _mm_prefetch(&(buckets_[i].valbits_[j]), _MM_HINT_NTA);
         return buckets_[i].valbits_[j];
     }
 

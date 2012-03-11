@@ -54,7 +54,7 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 
 
 #ifndef DEF_CACHE_SIZE
-#define DEF_CACHE_SIZE 0x800000
+#define DEF_CACHE_SIZE 0x1000000
 #endif
 
 const uint32_t Filter::BloomCacheMask = DEF_CACHE_SIZE - 1;
@@ -68,7 +68,9 @@ Filter::Filter() {
     memset(bitvector, 0, DEF_CACHE_SIZE);
 }
 
-Filter::~Filter() {}
+Filter::~Filter() {
+    delete [] bitvector;
+}
 
 
 inline void Filter::updateHashes(u_int8_t nextChar)

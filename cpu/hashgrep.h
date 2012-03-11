@@ -20,8 +20,6 @@ limitations under the License.
 #define HASH_GREP_H
 
 #include <string>
-#include <queue>
-#include <vector>
 #include <stdint.h>
 
 #include "../hashes/hash_rot_sbox_pre_2.h"
@@ -74,7 +72,7 @@ public:
     ~Filter();
 
     void buildFilter(char* phrasesfilename) throw(FilterError);
-    //Filter& operator<<(string& pattern) throw(FilterError);
+
     /* void loadFilterFromFile(int fd) throw(FilterError); */
     /* void saveFilterToFile(int fd) throw(FilterError); */
 
