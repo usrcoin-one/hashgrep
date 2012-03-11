@@ -53,16 +53,25 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 #endif
 
 
+#ifndef DEF_CACHE_SIZE
+#define DEF_CACHE_SIZE 0x800000
+#endif
+
+const uint32_t Filter::BloomCacheMask = DEF_CACHE_SIZE - 1;
+
 using namespace std;
 
 mt19937 engine;
 
-Filter::Filter() {}
+Filter::Filter() {
+    bitvector = new uint8_t[DEF_CACHE_SIZE];
+    memset(bitvector, 0, DEF_CACHE_SIZE);
+}
 
 Filter::~Filter() {}
 
 
-void Filter::updateHashes(u_int8_t nextChar)
+inline void Filter::updateHashes(u_int8_t nextChar)
 {
     if (nextChar & 0x80)
     {
@@ -72,6 +81,36 @@ void Filter::updateHashes(u_int8_t nextChar)
     hash.update(nextChar);
 }
 
+inline void Filter::setBit(uint32_t index)
+{
+    uint32_t byteIndex = index >> 3;
+    uint8_t bitMask = 1 << (index & 0x00000007);
+    bitvector[byteIndex] |= bitMask;
+}
+
+inline bool Filter::checkInFilter()
+{
+    uint32_t x1 = hash.hval1() & BloomCacheMask;
+    uint32_t x2 = hash.hval2() & BloomCacheMask;
+    uint32_t byteIndex;
+    uint8_t bitMask;
+
+    byteIndex= x1 >> 3;
+    bitMask = 1 << (x1 & 0x00000007);
+    if (!(bitvector[byteIndex] & bitMask))
+    {
+        return false;
+    }
+
+    byteIndex = x2 >> 3;
+    bitMask = 1 << (x2 & 0x00000007);
+    if (!(bitvector[byteIndex] & bitMask))
+    {
+        return false;
+    }
+
+    return true;
+}
 
 void Filter::buildFilter(char* phrasefilename) throw(FilterError)
 {
@@ -111,6 +150,11 @@ void Filter::buildFilter(char* phrasefilename) throw(FilterError)
                 throw FilterError("Error while buiding hash table");
             }
 
+            uint32_t x1 = hash.hval1() & BloomCacheMask;
+            uint32_t x2 = hash.hval2() & BloomCacheMask;
+            setBit(x1);
+            setBit(x2);
+
         }
         catch (FilterError& fe)
         {
@@ -129,7 +173,8 @@ void Filter::processCorpus(int fd) throw(FilterError)
     char* buff = new char[size];
 
     string line;
-    
+    size_t total = 0;
+    size_t hit = 0;
     while (getline(cin, line))
     {
 
@@ -143,7 +188,13 @@ void Filter::processCorpus(int fd) throw(FilterError)
             
             if (hash.is_full()) {
                 //cout << "\t with " << i << "  " << hashstart << endl;
+                total ++;
+                if (!checkInFilter()) {
+                    continue;
+                }
 
+                hit ++; //cout  << line << endl;
+                continue;
                 char* p;
                 if (hashfilter.Get(hash.h, p) == Ok) {
 
@@ -168,37 +219,8 @@ void Filter::processCorpus(int fd) throw(FilterError)
         }
 
     }
-    //while (true) {
-        // int r = read(fd, (void*)buff, size);
-        // if (r < 0) {
-        //     perror("Error");
-        //     throw FilterError("Error while reading from file");
-        // }
 
-        // if (r == 0) {
-        //     break;
-        // }
-
-        // for (int i = 0; i < r; i++) {
-
-        //     if (buff[i] == '\n') {
-        //         hash.reset();
-        //         continue;
-        //     }
-
-        //     updateHashes(buff[i]);
-
-        //     if (hash.is_full()) {
-        //         char* p;
-        //         if (hashfilter.Get(hash.h, p) == Ok) {
-        //             //cout << "have seen this prefix:" << endl;
-        //             patterns.push_back(p);
-        //             linestarts.push_back(
-    
-        //     }
-        // }
-
-    //}
+    cout << total << " " << hit << endl;
 
     delete [] buff;
 }

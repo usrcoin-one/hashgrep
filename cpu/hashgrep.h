@@ -50,14 +50,25 @@ public:
 
 class Filter
 {
+
+    static const uint32_t BloomCacheMask;
+
+    //the Bloom filter bit vector
+    uint8_t* bitvector;
+
     // rolling hash
     hash_rot_sbox_pre_2<DEF_PATT_LEN> hash;
     
     CuckooHashtable<uint64_t, char*, 16, 20> hashfilter;
 
     //computes rolling hash functions
-    void updateHashes(u_int8_t nextChar);
+    inline void updateHashes(u_int8_t nextChar);
     
+    inline void setBit(uint32_t index);
+
+    inline bool checkInFilter();
+
+
 public:
     Filter();
     ~Filter();
