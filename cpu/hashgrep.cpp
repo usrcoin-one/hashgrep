@@ -36,6 +36,15 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 
 #include "hashgrep.h"
 
+#define HUGEPAGE
+
+#ifndef DEF_CACHE_SIZE
+#define DEF_CACHE_SIZE 0x800000
+#endif
+
+#ifndef HUGEPAGE_FILE_NAME
+#define HUGEPAGE_FILE_NAME "./mnt/hugepagefile"
+#endif
 
 #define DO_TIMING 1
 #if DO_TIMING
@@ -54,14 +63,6 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 #endif
 
 
-#ifndef DEF_CACHE_SIZE
-#define DEF_CACHE_SIZE 0x1000000
-#endif
-
-#ifndef HUGEPAGE_FILE_NAME
-#define HUGEPAGE_FILE_NAME "./mnt/hugepagefile"
-#endif
-
 const uint32_t Filter::BloomCacheMask = DEF_CACHE_SIZE - 1;
 
 using namespace std;
@@ -69,9 +70,8 @@ using namespace std;
 mt19937 engine;
 
 Filter::Filter() {
-    //bitvector = new uint8_t[DEF_CACHE_SIZE];
-    //memset(bitvector, 0, DEF_CACHE_SIZE);
-    //LARGE PAGE
+
+#ifdef HUGEPAGE
     fid = open(HUGEPAGE_FILE_NAME, O_CREAT | O_RDWR, 0755);
     if (fid < 0)
     {
@@ -89,13 +89,23 @@ Filter::Filter() {
     }
 
     bitvector = (uint8_t*)mapaddr;
+#else
+    bitvector = new uint8_t[DEF_CACHE_SIZE];
+    memset(bitvector, 0, DEF_CACHE_SIZE);
+#endif
+
+    strbuf_size = 0;
 }
 
 Filter::~Filter() {
-    //delete [] bitvector;    
+    
+#ifdef HUGEPAGE 
     munmap(mapaddr, DEF_CACHE_SIZE);
     close(fid);
     unlink(HUGEPAGE_FILE_NAME);
+#else
+    delete [] bitvector;   
+#endif
 }
 
 
@@ -173,6 +183,7 @@ void Filter::buildFilter(char* phrasefilename) throw(FilterError)
             char* cstr = new char [pattern.size() + sizeof(char*) + 1];
             memcpy(cstr, &p, sizeof(char*));
             strcpy(cstr + sizeof(char*), pattern.c_str());
+            strbuf_size += pattern.size() + sizeof(char*) + 1;
 
             if (hashfilter.Put(hash.h, cstr) != Ok) {
                 throw FilterError("Error while buiding hash table");
@@ -299,60 +310,18 @@ void Filter::processCorpus(int fd) throw(FilterError)
 
     }
 
-    // string line;
-    // while (getline(cin, line))
-    // {
-
-    //     //cout << "----" << line << endl;
-    //     bool printLine = false;
-    //     hash.reset();
-    //     const char* buff = line.data();
-    //     char* hashstart = (char* ) buff;
-    //     for (unsigned i = 0; i < line.length(); i++) {
-    //         updateHashes(buff[i]);
-    //         total ++; continue;
-    //         if (hash.is_full()) {
-    //             //cout << "\t with " << i << "  \"" << hashstart << "\"" << endl;
-    //             total ++;
-    //             if (!checkInFilter()) {
-    //                 hashstart ++;
-    //                 continue;
-    //             }
-
-    //             hit ++; 
-                
-    //             //hashstart ++; continue;
-
-    //             char* p;
-    //             if (hashfilter.Get(hash.h, p) == Ok) {
-
-    //                 while (p != NULL) {
-    //                     char* q = p + sizeof(char*);
-    //                     //cout << "\t checking " << q << endl;
-    //                     if (strncmp(hashstart, q, strlen(q)) == 0) {
-    //                         printLine = true;
-    //                         break;
-    //                     }
-    //                     p = *(char**) p;
-    //                 }
-
-    //                 if (printLine) {
-    //                     cout << line << endl;
-    //                     break;
-    //                 }
-    //             }
-    //             hashstart  ++;
-               
-    //         }
-    //     }
-
-    // }
-
     cerr << "Total " << cnt0 << " queries" << endl;
     cerr << "Bloomfilter sees " << cnt1 << " hits, hitratio=" << 1.0 * cnt1/cnt0 << endl;
     cerr << "Hashfilter sees " << cnt2 << " hits, hitratio=" << 1.0 * cnt2/cnt1 << endl;
     cerr << "Strcmp sees " << cnt3 << " hits" << endl;
     delete [] buff;
+}
+
+
+void Filter::printStatus() {
+    cerr << "Bloomfilter size  =" << (DEF_CACHE_SIZE >> 10) << " KB" << endl;
+    cerr << "Hashfilter size   =" << (hashfilter.SizeInBytes() >> 10) << " KB" << endl;
+    cerr << "All string buffer =" << (strbuf_size >> 10) << " KB" << endl;
 }
 
 int main(int argc, char* argv[])
@@ -368,14 +337,12 @@ int main(int argc, char* argv[])
 
 
 
-    try
-    {
+    try {
         TIME("buildFilter", filter.buildFilter(argv[1]));
         filter.printStatus();
         TIME("processCorpus", filter.processCorpus(STDIN_FILENO));
     }
-    catch (FilterError& fe)
-    {
+    catch (FilterError& fe) {
         cerr << "Exception " << fe.what() << endl;
     }
 

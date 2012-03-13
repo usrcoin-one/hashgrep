@@ -57,6 +57,8 @@ class Filter
     //the Bloom filter bit vector
     uint8_t* bitvector;
 
+    size_t strbuf_size;
+
     // rolling hash
     hash_rot_sbox_pre_2<DEF_PATT_LEN> hash;
     
@@ -81,9 +83,7 @@ public:
 
     void processCorpus(int fd) throw(FilterError);
 
-    void printStatus() {
-        cerr << hashfilter.Info() << endl;
-    }
+    void printStatus();
 };
 
 /* Handy crap for filling in templates */

@@ -40,7 +40,7 @@ check: $(TESTS)
 	for t in $(TESTS); do echo "***** Running $$t"; ./$$t || exit 1; done
 
 clean:
-	rm -f $(PROGRAMS) *.o */*.o
+	rm -f $(PROGRAMS) *.o */*.o *~
 
 cleanall: clean
 	rm -f */*.gcda
