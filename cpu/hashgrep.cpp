@@ -57,6 +57,10 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 #define DEF_CACHE_SIZE 0x1000000
 #endif
 
+#ifndef HUGEPAGE_FILE_NAME
+#define HUGEPAGE_FILE_NAME "./mnt/hugepagefile"
+#endif
+
 const uint32_t Filter::BloomCacheMask = DEF_CACHE_SIZE - 1;
 
 using namespace std;
@@ -64,12 +68,33 @@ using namespace std;
 mt19937 engine;
 
 Filter::Filter() {
-    bitvector = new uint8_t[DEF_CACHE_SIZE];
-    memset(bitvector, 0, DEF_CACHE_SIZE);
+    //bitvector = new uint8_t[DEF_CACHE_SIZE];
+    //memset(bitvector, 0, DEF_CACHE_SIZE);
+    //LARGE PAGE
+    fid = open(HUGEPAGE_FILE_NAME, O_CREAT | O_RDWR, 0755);
+    if (fid < 0)
+    {
+		cerr << HUGEPAGE_FILE_NAME << endl;
+        perror("open file error: ");
+        throw FilterError("Not able to initialize filter");
+    }
+
+    mapaddr = mmap(NULL, DEF_CACHE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fid, 0);
+
+    if (mapaddr == MAP_FAILED)
+    {
+        perror("map failed: ");
+        throw FilterError("Not able to initialize filter");
+    }
+
+    bitvector = (uint8_t*)mapaddr;
 }
 
 Filter::~Filter() {
-    delete [] bitvector;
+    //delete [] bitvector;    
+    munmap(mapaddr, DEF_CACHE_SIZE);
+    close(fid);
+    unlink(HUGEPAGE_FILE_NAME);
 }
 
 
@@ -189,14 +214,17 @@ void Filter::processCorpus(int fd) throw(FilterError)
             updateHashes(buff[i]);
             
             if (hash.is_full()) {
-                //cout << "\t with " << i << "  " << hashstart << endl;
+                //cout << "\t with " << i << "  \"" << hashstart << "\"" << endl;
                 total ++;
                 if (!checkInFilter()) {
+                    hashstart ++;
                     continue;
                 }
 
-                hit ++; //cout  << line << endl;
-                //continue;
+                hit ++; 
+                
+                //hashstart ++; continue;
+
                 char* p;
                 if (hashfilter.Get(hash.h, p) == Ok) {
 
@@ -214,9 +242,9 @@ void Filter::processCorpus(int fd) throw(FilterError)
                         cout << line << endl;
                         break;
                     }
-
                 }
-                hashstart ++;
+                hashstart  ++;
+               
             }
         }
 
@@ -244,7 +272,7 @@ int main(int argc, char* argv[])
     {
         TIME("buildFilter", filter.buildFilter(argv[1]));
         filter.printStatus();
-        TIME("processFile", filter.processCorpus(STDIN_FILENO));
+        TIME("processCorpus", filter.processCorpus(STDIN_FILENO));
     }
     catch (FilterError& fe)
     {

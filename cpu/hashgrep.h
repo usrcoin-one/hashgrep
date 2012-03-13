@@ -51,6 +51,9 @@ class Filter
 
     static const uint32_t BloomCacheMask;
 
+    int fid;
+    void* mapaddr;
+
     //the Bloom filter bit vector
     uint8_t* bitvector;
 
@@ -79,7 +82,7 @@ public:
     void processCorpus(int fd) throw(FilterError);
 
     void printStatus() {
-        cout << hashfilter.Info() << endl;
+        cerr << hashfilter.Info() << endl;
     }
 };
 
