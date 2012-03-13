@@ -197,8 +197,8 @@ void Filter::buildFilter(char* phrasefilename) throw(FilterError)
 
 void Filter::processCorpus(int fd) throw(FilterError)
 {
-    //const int size = 512 * 1024;
-    const int size = 64;
+    const int size = 512 * 1024;
+    //const int size = 128;
     char* buff = new char[size];
 
     int crtLineSize = 4*1024;
@@ -207,6 +207,10 @@ void Filter::processCorpus(int fd) throw(FilterError)
 
     size_t cnt0 = 0, cnt1 = 0, cnt2 = 0, cnt3 = 0;
 
+    vector<int> vec1;
+    vector<char*> vec2;
+    int linePos = 0;
+
     hash.reset();
     while(true) {
         int r = read(fd, (void*)buff, size);
@@ -214,71 +218,57 @@ void Filter::processCorpus(int fd) throw(FilterError)
             perror("Error");
             throw FilterError("Error while reading from file");
         }
-
         if (r == 0) {
             break;
         }
 
         int lineStart = 0;
-        int hashStart = 0;
-        vector<int> vec1;
-        vector<char*> vec2;
+
         for (int i = 0; i < r; i++) {
             if (buff[i] == '\n') {
                 buff[i] = '\0';
-                char* pos;
+                char* start;
                 if (line[0] != '\0') {
                     // line is in use:
-                    cout << vec1.size() << endl;
-                    cout << "yay " << line << endl;
                     strncat(line, buff + lineStart, i - lineStart + 1 );
-                    pos = line;
-                    cout << vec1.size() << endl;
+                    start = line;
                 }
                 else {
-                    pos = buff + lineStart;
+                    start = buff + lineStart;
                 }
 
-                cout << "=============" << endl;
-                cout << pos << endl;
-                cout << vec1.size() << endl;
                 // perform strcmp for all recorded
                 bool printLine = false;
                 for (int j = 0; j < vec1.size(); j ++ ) {
-                    int hashStart = vec1[j];
+                    char *pos = start + vec1[j] - DEF_PATT_LEN + 1;
                     char *p = vec2[j];
-                    cout << "let\'s see " << pos + hashStart<< endl;
-                    //cout << hashStart << endl;
                     while (p != NULL) {
                         char* q = p + sizeof(char*);
-                        cout << "\t checking " << q << endl;
-                        if (strncmp(pos + hashStart, q, strlen(q)) == 0) {
+                        if (strncmp(pos, q, strlen(q)) == 0) {
                             printLine = true;
-                            cout << "match" << cnt3 << " line=" << pos << ", pattern = " << q << endl;
-
                             break;
                         }
                         p = *(char**) p;
                     }
                     if (printLine) {
                         cnt3 ++;
-                        cout << pos << endl;
+                        cout << start << endl;
                         break;
                     }
                     
                 }
-                cout << vec1.size() << endl;
                 vec1.clear();
                 vec2.clear();
                 line[0] = '\0';
 
                 hash.reset();
                 lineStart = i + 1;
-                hashStart = 0;
+                linePos = 0;
                 continue;
             }
           
             updateHashes(buff[i]);
+            //cout << buff[i] << " i = " << i << " linePos = " << linePos << " lineStar = " << lineStart << endl;
 
             if (hash.is_full()) {
                 cnt0 ++;
@@ -288,27 +278,23 @@ void Filter::processCorpus(int fd) throw(FilterError)
                     char* p;
                     if (hashfilter.Get(hash.h, p) == Ok) {
                         cnt2 ++;
-                        cout << "push_back\n" << buff + hashStart << endl ;
-                        vec1.push_back(hashStart);
-                        vec2.push_back(p);
-                        cout << vec1.size() << endl;
+                        vec1.push_back(linePos);
+                        vec2.push_back(p);                        
                     } 
-                    
                 }
-                hashStart ++;
             }
+            
+            linePos ++;
         }
 
         if (buff[r - 1] != '\n') {
-            if (r - lineStart > crtLineSize)
-            {
+            if (r - lineStart > crtLineSize) {
                 crtLineSize = (r - lineStart) * 2;
                 delete [] line;
                 line = new char[crtLineSize + 1];
             }
             memcpy(line, buff + lineStart, r - lineStart);
             line[r - lineStart] = '\0';
-            cout << vec1.size() << endl;
         }
 
     }
