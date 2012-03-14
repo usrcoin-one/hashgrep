@@ -316,6 +316,7 @@ void Filter::processCorpus(int fd) throw(FilterError)
     cerr << "Hashfilter sees " << cnt2 << " hits, hitratio=" << 1.0 * cnt2/cnt1 << endl;
     cerr << "Strcmp sees " << cnt3 << " hits" << endl;
     delete [] buff;
+    delete [] line;
 }
 
 
