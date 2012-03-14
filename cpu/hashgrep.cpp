@@ -42,6 +42,10 @@ The code has been tested on a Linux 2.6.38 machine, gcc version 4.6.1.
 #define DEF_CACHE_SIZE 0x1000000
 #endif
 
+#ifndef DEF_STRBUF_SIZE
+#define DEF_STRBUF_SIZE 0xa000000
+#endif
+
 #ifndef HUGEPAGE_FILE_NAME
 #define HUGEPAGE_FILE_NAME "./mnt/hugepagefile"
 #endif
@@ -71,28 +75,30 @@ Filter::Filter() {
 
 #ifdef HUGEPAGE
     fid = open(HUGEPAGE_FILE_NAME, O_CREAT | O_RDWR, 0755);
-    if (fid < 0)
-    {
+    if (fid < 0) {
 		cerr << HUGEPAGE_FILE_NAME << endl;
         perror("open file error: ");
         throw FilterError("Not able to initialize filter");
     }
 
-    mapaddr = mmap(NULL, DEF_CACHE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fid, 0);
+    size_t N = DEF_CACHE_SIZE + DEF_STRBUF_SIZE;
+    mapaddr = mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fid, 0);
 
-    if (mapaddr == MAP_FAILED)
-    {
+    if (mapaddr == MAP_FAILED) {
         perror("map failed: ");
         throw FilterError("Not able to initialize filter");
     }
 
     bitvector = (uint8_t*)mapaddr;
+    strbuf    = (char*)mapaddr + DEF_CACHE_SIZE;
 #else
     bitvector = new uint8_t[DEF_CACHE_SIZE];
+    strbuf    = new char[DEF_STRBUF_SIZE];
     memset(bitvector, 0, DEF_CACHE_SIZE);
+
 #endif
 
-    strbuf_size = 0;
+    strbuf_used = 1; // first byte of strbuf reserved
 }
 
 Filter::~Filter() {
@@ -102,7 +108,8 @@ Filter::~Filter() {
     close(fid);
     unlink(HUGEPAGE_FILE_NAME);
 #else
-    delete [] bitvector;   
+    delete [] bitvector;
+    delete [] strbuf;
 #endif
 }
 
@@ -110,10 +117,8 @@ Filter::~Filter() {
 inline void Filter::updateHashes(u_int8_t nextChar)
 {
     if (nextChar & 0x80)
-    {
         nextChar = 0;
-    }
-
+    
     hash.update(nextChar);
 }
 
@@ -134,16 +139,12 @@ inline bool Filter::checkInFilter()
     byteIndex= x1 >> 3;
     bitMask = 1 << (x1 & 0x00000007);
     if (!(bitvector[byteIndex] & bitMask))
-    {
         return false;
-    }
 
     byteIndex = x2 >> 3;
     bitMask = 1 << (x2 & 0x00000007);
     if (!(bitvector[byteIndex] & bitMask))
-    {
         return false;
-    }
 
     return true;
 }
@@ -157,10 +158,8 @@ void Filter::processPatterns(char* phrasefilename) throw(FilterError)
     }
 
     string pattern;
-    while (getline(inPhrases, pattern))
-    {
-        try
-        {
+    while (getline(inPhrases, pattern)) {
+        try {
 
             if (pattern.length() < DEF_PATT_LEN) {
                 throw FilterError("Search phrase too short");
@@ -172,20 +171,25 @@ void Filter::processPatterns(char* phrasefilename) throw(FilterError)
                 updateHashes(pattern[i]);
             }
 
-            char* p;
+            uint32_t p;
             if (hashfilter.Get(hash.h, p) == Ok) {
-        
+                assert(p > 0);
             } else
-                p = NULL;
+                p = 0;
 
-            char* cstr = new char [pattern.size() + sizeof(char*) + 1];
-            memcpy(cstr, &p, sizeof(char*));
-            strcpy(cstr + sizeof(char*), pattern.c_str());
-            strbuf_size += pattern.size() + sizeof(char*) + 1;
+            if (strbuf_used >= DEF_STRBUF_SIZE)  {
+                throw FilterError("Not enough strbuf, please make DEF_STRBUF_SIZE larger ");
+            }
 
-            if (hashfilter.Put(hash.h, cstr) != Ok) {
+            char* cstr = strbuf + strbuf_used;
+            memcpy(cstr, &p, sizeof(uint32_t));
+            strcpy(cstr + sizeof(uint32_t), pattern.c_str());
+
+            if (hashfilter.Put(hash.h, strbuf_used) != Ok) {
                 throw FilterError("Error while buiding hash table");
             }
+            strbuf_used += pattern.size() + sizeof(uint32_t) + 1;
+            
 
             uint32_t x1 = hash.hval1() & BloomCacheMask;
             uint32_t x2 = hash.hval2() & BloomCacheMask;
@@ -216,7 +220,7 @@ void Filter::processCorpus(int fd) throw(FilterError)
     size_t cnt0 = 0, cnt1 = 0, cnt2 = 0, cnt3 = 0;
 
     vector<int> vec1;
-    vector<char*> vec2;
+    vector<uint32_t> vec2;
     int linePos = 0;
 
     hash.reset();
@@ -249,14 +253,14 @@ void Filter::processCorpus(int fd) throw(FilterError)
                 bool printLine = false;
                 for (unsigned j = 0; j < vec1.size(); j ++ ) {
                     char *pos = start + vec1[j] - DEF_PATT_LEN + 1;
-                    char *p = vec2[j];
-                    while (p != NULL) {
-                        char* q = p + sizeof(char*);
+                    uint32_t p = vec2[j];
+                    while (p != 0) {
+                        char* q = strbuf + p + sizeof(uint32_t);
                         if (strncmp(pos, q, strlen(q)) == 0) {
                             printLine = true;
                             break;
                         }
-                        p = *(char**) p;
+                        p = *(uint32_t*) (strbuf + p);
                     }
                     if (printLine) {
                         cnt3 ++;
@@ -283,7 +287,7 @@ void Filter::processCorpus(int fd) throw(FilterError)
                 if (checkInFilter()) {
                     cnt1 ++;
 
-                    char* p;
+                    uint32_t p;
                     if (hashfilter.Get(hash.h, p) == Ok) {
                         cnt2 ++;
                         vec1.push_back(linePos);
@@ -318,7 +322,7 @@ void Filter::processCorpus(int fd) throw(FilterError)
 void Filter::printStatus() {
     cerr << "Bloomfilter size  =" << (DEF_CACHE_SIZE >> 10) << " KB" << endl;
     cerr << "Hashfilter size   =" << (hashfilter.SizeInBytes() >> 10) << " KB" << endl;
-    cerr << "All string buffer =" << (strbuf_size >> 10) << " KB" << endl;
+    cerr << "All string buffer =" << (strbuf_used >> 10) << " KB" << endl;
 }
 
 int main(int argc, char* argv[])

@@ -57,12 +57,13 @@ class Filter
     //the Bloom filter bit vector
     uint8_t* bitvector;
 
-    size_t strbuf_size;
+    char* strbuf;
+    size_t strbuf_used;
 
     // rolling hash
     hash_rot_sbox_pre_2<DEF_PATT_LEN> hash;
     
-    CuckooHashtable<uint64_t, char*, 16, 20> hashfilter;
+    CuckooHashtable<uint64_t, uint32_t , 16, 20> hashfilter;
 
     //computes rolling hash functions
     inline void updateHashes(u_int8_t nextChar);
