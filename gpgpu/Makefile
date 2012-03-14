@@ -8,14 +8,14 @@ greptest:  greptest.o getfile.o timing.o
 	nvcc -o greptest -gencode arch=compute_20,code=sm_20 greptest.o getfile.o timing.o $(LDFLAGS)
 
 hashgrep:  hashgrep.o getfile.o timing.o
-	nvcc -o old_greptest -gencode arch=compute_20,code=sm_20 old_greptest.o getfile.o timing.o $(LDFLAGS)
+	nvcc -o hashgrep -gencode arch=compute_20,code=sm_20 hashgrep.o getfile.o timing.o $(LDFLAGS)
 
 
 greptest.o: greptest.cu
 	nvcc -gencode arch=compute_20,code=sm_20 -c -o greptest.o greptest.cu -I./SDKlink/common/include -g
 
 hashgrep.o: hashgrep.cu
-	nvcc -gencode arch=compute_20,code=sm_20 -c -o old_greptest.o old_greptest.cu -I./SDKlink/common/include -g
+	nvcc -gencode arch=compute_20,code=sm_20 -c -o hashgrep.o hashgrep.cu -I./SDKlink/common/include -g
 
 
 getfile.o: getfile.c
