@@ -76,7 +76,7 @@ public:
     Filter();
     ~Filter();
 
-    void buildFilter(char* phrasesfilename) throw(FilterError);
+    void processPatterns(char* phrasesfilename) throw(FilterError);
 
     /* void loadFilterFromFile(int fd) throw(FilterError); */
     /* void saveFilterToFile(int fd) throw(FilterError); */
@@ -86,21 +86,5 @@ public:
     void printStatus();
 };
 
-/* Handy crap for filling in templates */
-template <int P>
-struct kpowerto
-{ enum { value = 2654435769U * kpowerto<P-1>::value };};
-
-template<>
-struct kpowerto<0>
-{ enum { value = 1 }; };
-
-template <int P>
-struct fpowerto
-{ enum { value = (0xffffffff & (2166136261U * kpowerto<P-1>::value)) };};
-
-template<>
-struct fpowerto<0>
-{ enum { value = 1 }; };
 
 #endif

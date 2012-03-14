@@ -15,8 +15,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-This is the implementation of a feed-forward Bloom filter.
-The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
+This is the implementation of a hash based grep
+The code has been tested on a Linux 2.6.38 machine, gcc version 4.6.1.
 */
 
 #include <iostream>
@@ -39,7 +39,7 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 #define HUGEPAGE
 
 #ifndef DEF_CACHE_SIZE
-#define DEF_CACHE_SIZE 0x800000
+#define DEF_CACHE_SIZE 0x1000000
 #endif
 
 #ifndef HUGEPAGE_FILE_NAME
@@ -66,8 +66,6 @@ The code has been tested on a Linux 2.6.35 machine, gcc version 4.4.5.
 const uint32_t Filter::BloomCacheMask = DEF_CACHE_SIZE - 1;
 
 using namespace std;
-
-mt19937 engine;
 
 Filter::Filter() {
 
@@ -150,7 +148,7 @@ inline bool Filter::checkInFilter()
     return true;
 }
 
-void Filter::buildFilter(char* phrasefilename) throw(FilterError)
+void Filter::processPatterns(char* phrasefilename) throw(FilterError)
 {
     ifstream inPhrases(phrasefilename);
     if (!inPhrases.is_open()) {
@@ -209,7 +207,6 @@ void Filter::buildFilter(char* phrasefilename) throw(FilterError)
 void Filter::processCorpus(int fd) throw(FilterError)
 {
     const int size = 512 * 1024;
-    //const int size = 128;
     char* buff = new char[size];
 
     int crtLineSize = 4*1024;
@@ -250,7 +247,7 @@ void Filter::processCorpus(int fd) throw(FilterError)
 
                 // perform strcmp for all recorded
                 bool printLine = false;
-                for (int j = 0; j < vec1.size(); j ++ ) {
+                for (unsigned j = 0; j < vec1.size(); j ++ ) {
                     char *pos = start + vec1[j] - DEF_PATT_LEN + 1;
                     char *p = vec2[j];
                     while (p != NULL) {
@@ -335,12 +332,10 @@ int main(int argc, char* argv[])
 
     Filter filter;
 
-
-
     try {
-        TIME("buildFilter", filter.buildFilter(argv[1]));
-        filter.printStatus();
+        TIME("processPatterns", filter.processPatterns(argv[1]));
         TIME("processCorpus", filter.processCorpus(STDIN_FILENO));
+        filter.printStatus();
     }
     catch (FilterError& fe) {
         cerr << "Exception " << fe.what() << endl;
