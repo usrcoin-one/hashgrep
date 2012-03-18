@@ -1,23 +1,23 @@
 /* -*- Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*- */
 
 /**
-Copyright 2012 Carnegie Mellon University
+   Copyright 2012 Carnegie Mellon University
 
-Authors: Bin Fan, Iulian Moraru and David G. Andersen
+   Authors: Bin Fan, Iulian Moraru and David G. Andersen
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
 
-     http://www.apache.org/licenses/LICENSE-2.0
+   http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
 
-This is the implementation of a hash based grep for GPGPU.
+   This is the implementation of a hash based grep for GPGPU.
 */
 
 #define _DARWIN_FEATURE_64_BIT_INODE 1
@@ -28,7 +28,7 @@ This is the implementation of a hash based grep for GPGPU.
 #include <string.h>
 #include <math.h>
 #include <fcntl.h>
- #include <unistd.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/stat.h>
@@ -46,7 +46,7 @@ using namespace std;
 
 
 extern "C" {
-int getfile(char *infile, size_t *filesize);
+    int getfile(char *infile, size_t *filesize);
 #include "timing.h"
 }
 
@@ -76,11 +76,11 @@ const uint32_t bucket_size = 4;
 const uint32_t num_buckets = 1ULL << num_indexbits;
 const uint32_t INDEXMASK = num_buckets - 1;
 const uint32_t TAGMASK = (1ULL << num_tagbits) - 1;
-
+const uint32_t BFMASK  = num_bfbits - 1;
 
 HashfilterType hashfilter;
 
-// texture<unsigned char, 1, cudaReadModeElementType> tex_buckets;
+//texture<BucketType, 1, cudaReadModeElementType> tex_buckets;
 // texture<unsigned char, 1, cudaReadModeElementType> tex_strbuf;
 
 unsigned char *dev_buckets;
@@ -137,7 +137,7 @@ __host__ void setup(char* pattern_file)
             p = 0;
 
         if (strbuf_used >= DEF_STRBUF_SIZE)  {
-             perror("Not enough strbuf, please make DEF_STRBUF_SIZE larger ");
+            perror("Not enough strbuf, please make DEF_STRBUF_SIZE larger ");
         }
 
         char* cstr = strbuf + strbuf_used;
@@ -158,32 +158,35 @@ __host__ void setup(char* pattern_file)
     size_t len = hashfilter.SizeInBytes();
 
     exit_on_error("cudaMalloc",
-                cudaMalloc((void **) &dev_buckets, 
-                           len));
+                  cudaMalloc((void **) &dev_buckets, 
+                             len));
 
     exit_on_error("cudaMalloc",
-                cudaMalloc((void **) &dev_strbuf, 
-                           strbuf_used));
+                  cudaMalloc((void **) &dev_strbuf, 
+                             strbuf_used));
 
     exit_on_error("cudaMemcpy",
-                cudaMemcpy(dev_buckets, 
-                           hashfilter.buckets_, 
-                           len, 
-                           cudaMemcpyHostToDevice));
+                  cudaMemcpy(dev_buckets, 
+                             hashfilter.buckets_, 
+                             len, 
+                             cudaMemcpyHostToDevice));
 
     exit_on_error("cudaMemcpy",
-                cudaMemcpy(dev_strbuf, 
-                           strbuf, 
-                           strbuf_used, 
-                           cudaMemcpyHostToDevice));
+                  cudaMemcpy(dev_strbuf, 
+                             strbuf, 
+                             strbuf_used, 
+                             cudaMemcpyHostToDevice));
 
- }
+    // /* Bind the hashfilter to a texture */
+    // exit_on_error("cudaBindTexture tex_buckets to dev_buckets",
+    //               cudaBindTexture(NULL, tex_buckets, dev_buckets, len));
+}
 
 
 int pick_dim(dim3 &dimGrid,
-            dim3 &dimBlock,
-            int numthreads,
-            int blocksize)
+             dim3 &dimBlock,
+             int numthreads,
+             int blocksize)
 {
     unsigned int blocks_y = 1;
     unsigned int blocks_x = 1;
@@ -213,25 +216,9 @@ inline __device__ void dev_set_bit(int i, unsigned char *bv) {
     atomicOr(&p[i >> 5], bitMask);
 }
 
-inline __device__ uint32_t dev_read_tag(unsigned char* dev_buckets,
-                                        uint32_t i, 
-                                        uint32_t j)
-{
-    size_t offset = num_tagbits * j;
-    HashfilterType::Bucket* b;
-    b = (HashfilterType::Bucket*) (dev_buckets + i * sizeof(HashfilterType::Bucket) );
-    uint32_t v = *(uint32_t *) (b->tagbits_ + offset / 8);
-    v = (v >> (offset & 0x7)) & TAGMASK;
-    return v;
-}
-
-inline __device__ uint32_t dev_read_value(unsigned char* dev_buckets, 
-                                          uint32_t i, 
-                                          uint32_t j)
-{
-    HashfilterType::Bucket* b;
-    b = (HashfilterType::Bucket*) (dev_buckets + i * sizeof(HashfilterType::Bucket) );
-    return b->valbits_[j];
+inline __device__ bool dev_is_bit_set(int i, unsigned char *bv) {
+    unsigned int bitMask = 1 << (i & 7);
+    return (bv[i >> 3] & bitMask);
 }
 
 
@@ -270,54 +257,52 @@ __global__ void GrepKernel(unsigned char *d_a,
 
 
     uint32_t i1, i2, tag;
-    bool found = false;
     
     tag =  hval[0] & TAGMASK;
     tag += (tag == 0); 
     i1 = hval[1] & INDEXMASK;
     i2 = (i1 ^ (tag * 0x5bd1e995)) & INDEXMASK;
 
-    BucketType *b1 = (BucketType *) (dev_buckets + i1 * sizeof(BucketType));
+    // BucketType *b1 = (BucketType *) (dev_buckets + i1 * sizeof(BucketType));
+    // uint64_t tagbits1 = *(uint64_t*) b1->tagbits_;
+
+    //BucketType b1 = *(BucketType *) (dev_buckets + i1 * sizeof(BucketType));
 
     
+    ulong3 v1 = *(ulong3 *) (dev_buckets + i1 * sizeof(BucketType));
+    BucketType* b1 = (BucketType*) &v1;
 
-    uint64_t tagbits1 = *(uint64_t*) b1->tagbits_;
+    uint64_t tagbits1 = *(uint64_t*) (b1->tagbits_);
+    unsigned char* bfbits1 = b1->bfbits_;
 
     for (int j = 0; j < bucket_size; j ++) {
-        
         uint32_t tag1 = tagbits1 & TAGMASK;
         tagbits1 >>= num_tagbits;
-        //char tag1 = b1->tagbits_[j];
         if (tag1 == tag) {
-            found = true;
-            break;
+            dev_set_bit(i, dev_pos_bitmap);
+            return;
         }
-
-        // BucketType *b2 = (BucketType *) (dev_buckets + i2 * sizeof(BucketType));
-        // uint32_t tag2 = *((uint32_t*) b2->tagbits_);
-        // if (tag2 == tag) {
-        //     found = true;
-        //     break;
-        // }
-
-
-        //uint32_t val;
-        // if (dev_read_tag(dev_buckets, i1, j) == tag) {
-        //     //val = dev_read_value(i1, j);
-        //     found = true;
-        //     break;
-        // }
-
-        // if (dev_read_tag(dev_buckets, i2, j) == tag) {
-        //     //val = dev_read_value(i2, j);
-        //     found = true;
-        //     break;
-        // }        
     }
 
-    if (found) {
-        dev_set_bit(i, dev_pos_bitmap);
+    if (!(dev_is_bit_set(i2 & BFMASK, bfbits1) &&
+          dev_is_bit_set(tag & BFMASK, bfbits1))) 
+        return;
+
+
+    ulong3 v2 = *(ulong3 *) (dev_buckets + i2 * sizeof(BucketType));
+    BucketType *b2 = (BucketType*) &v2;
+
+    uint64_t tagbits2 = *(uint64_t*) (b2->tagbits_);
+
+    for (int j = 0; j < bucket_size; j ++) {
+        uint32_t tag2 = tagbits2 & TAGMASK;
+        tagbits2 >>= num_tagbits;
+        if (tag2 == tag) {            
+            dev_set_bit(i, dev_pos_bitmap);
+            return;
+        }
     }
+    return;
 }
 
 __host__ void process_corpus(char* corpus_file) 
@@ -354,7 +339,7 @@ __host__ void process_corpus(char* corpus_file)
 
     for (int i = 0; i < NR_STREAMS; i++) {
         exit_on_error("cudaStreamCreate",
-                    cudaStreamCreate(&streams[i]));
+                      cudaStreamCreate(&streams[i]));
     }
 
     int size = filesize / NR_STREAMS;
@@ -373,7 +358,7 @@ __host__ void process_corpus(char* corpus_file)
         read(fd, pinnedBuf + offset, size);
 
         exit_on_error("cudaMemcpyAsync",
-            cudaMemcpyAsync(dev_corpus + offset, pinnedBuf + offset, size, cudaMemcpyHostToDevice, streams[i]));
+                      cudaMemcpyAsync(dev_corpus + offset, pinnedBuf + offset, size, cudaMemcpyHostToDevice, streams[i]));
 
         unsigned int char_offset = 0;
         while (numthreads > 0) {
@@ -411,6 +396,8 @@ int main(int argc, char **argv)
     char *corpus_file = argv[2];
 
     //cout << sizeof(HashfilterType::Bucket) << endl;
+    //cout << sizeof(uint4) << " " << sizeof(ulong4) << endl;
+    //return 0;
 
     strbuf = new char[DEF_STRBUF_SIZE];
 
