@@ -164,8 +164,8 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits, num_bfbits>::Put
     size_t i1 = IndexHash((char*) &key);
     size_t i2 = AltIndex(i1, tag);
 
-    // printf("PUT: key=%x\n", key);
-    // printf("PUT: i1 = %x, i2 = %x, tag= %x\n", i1, i2, tag);
+    //printf("PUT: key=%x\n", key);
+    //printf("PUT: i1=%05x, i2=%05x, tag=%04x\n", i1, i2, tag);
 
     size_t i = 0;
     size_t k = bucket_size;
@@ -178,7 +178,7 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits, num_bfbits>::Put
             WriteValue(i1, j, v);
             num_keys_ ++;
             return Ok;
-        } else if (t == 0) {
+        } else if ((t == 0) && (k == bucket_size)) {
             i = i1;
             k = j;
         }
@@ -188,7 +188,7 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits, num_bfbits>::Put
             WriteValue(i2, j, v);
             num_keys_ ++;
             return Ok;
-        } else if (t == 0) {
+        } else if ((t == 0) && (k == bucket_size)) {
             i = i2;
             k = j;
         }        
