@@ -54,11 +54,14 @@ extern "C" {
 #define HASH_LEN 19
 #define FILE_MAX 6710886400
 #define NR_STREAMS 10
+//#define NR_STREAMS 1
 
 #ifndef DEF_STRBUF_SIZE
 #define DEF_STRBUF_SIZE 0xa000000
 #endif
 
+//#define COUNTING
+#define FILTERING
 
 char *pinnedBuf;
 char *strbuf;
@@ -76,17 +79,16 @@ const uint32_t bucket_size = 4;
 const uint32_t num_buckets = 1ULL << num_indexbits;
 const uint32_t INDEXMASK = num_buckets - 1;
 const uint32_t TAGMASK = (1ULL << num_tagbits) - 1;
-const uint32_t BFMASK  = num_bfbits - 1;
+const uint32_t BFINDEXMASK  = num_bfbits - 1;
 
 HashfilterType hashfilter;
-
-//texture<BucketType, 1, cudaReadModeElementType> tex_buckets;
-// texture<unsigned char, 1, cudaReadModeElementType> tex_strbuf;
 
 unsigned char *dev_buckets;
 unsigned char *dev_strbuf;
 unsigned char *dev_corpus;
 unsigned char *dev_pos_bitmap;
+unsigned int *dev_cnt1;
+unsigned int *dev_cnt2;
 
 void exit_on_error(const char *name, cudaError_t err) {
     if (err) {
@@ -105,7 +107,7 @@ inline __device__ uint32_t  dev_rol32(unsigned int word, int shift)
     return (word << shift) | (word >> (32 - shift));
 }
 
-__host__ void setup(char* pattern_file) 
+void setup(char* pattern_file) 
 {
     ifstream inPhrases(pattern_file);
     if (!inPhrases.is_open()) {
@@ -125,11 +127,14 @@ __host__ void setup(char* pattern_file)
         for (int j = 0; j < HASH_LEN; j++) {
             hval[0] = rol32(hval[0], 1);
             hval[1] = rol32(hval[1], 3);
-            uint32_t  sbv = sbox[pattern[j]];
+            uint32_t  sbv = host_sbox[pattern[j]];
             hval[0] ^= sbv;
             hval[1] ^= sbv;
         }
-            
+        
+        // printf("\n");
+        // printf("hal={%x %x}\n", hval[0], hval[1]);
+
         uint32_t p;
         if (hashfilter.Get(*((uint64_t*) hval), p) == Ok) {
             assert(p > 0);
@@ -177,11 +182,78 @@ __host__ void setup(char* pattern_file)
                              strbuf_used, 
                              cudaMemcpyHostToDevice));
 
-    // /* Bind the hashfilter to a texture */
-    // exit_on_error("cudaBindTexture tex_buckets to dev_buckets",
-    //               cudaBindTexture(NULL, tex_buckets, dev_buckets, len));
+
+#ifdef COUNTING
+    exit_on_error("cudaMalloc dev_cnt1",
+                  cudaMalloc((void **) &dev_cnt1, 
+                             sizeof(unsigned int)));
+
+
+    exit_on_error("cudaMalloc dev_cnt2",
+                  cudaMalloc((void **) &dev_cnt2, 
+                             sizeof(unsigned int)));
+
+    exit_on_error("cudaMemset dev_cnt1 = 0",
+                  cudaMemset(dev_cnt1, 0, sizeof(unsigned int)));
+
+    exit_on_error("cudaMemset dev_cnt2 = 0",
+                  cudaMemset(dev_cnt2, 0, sizeof(unsigned int)));
+
+#endif
+
 }
 
+void test_setup(char* pattern_file) 
+{
+
+    cerr<< "testing setup result" << endl;
+    ifstream inPhrases(pattern_file);
+    if (!inPhrases.is_open()) {
+        cerr << "Can not open phrase file " << pattern_file << endl;
+        exit(-1);
+    }
+
+    string pattern;
+    while (getline(inPhrases, pattern)) {
+        if (pattern.length() < HASH_LEN) {
+            perror("Search phrase too short");
+            exit(-1);
+        }
+
+        uint32_t  hval[2] = {0, 0};
+
+        for (int j = 0; j < HASH_LEN; j++) {
+            hval[0] = rol32(hval[0], 1);
+            hval[1] = rol32(hval[1], 3);
+            uint32_t  sbv = host_sbox[pattern[j]];
+            hval[0] ^= sbv;
+            hval[1] ^= sbv;
+        }
+            
+        uint32_t p;
+        if (hashfilter.Get(*((uint64_t*) hval), p) == Ok) {
+            continue;
+        } 
+
+        cout << "cannot find " << pattern;
+            
+    }
+    inPhrases.close();
+   
+}
+
+void cleanup() 
+{
+    cudaFree(dev_strbuf);
+    cudaFree(dev_buckets);
+    cudaFreeHost(pinnedBuf);
+
+#ifdef COUNTING
+    cudaFree(dev_cnt1);
+    cudaFree(dev_cnt2);
+#endif
+
+}
 
 int pick_dim(dim3 &dimGrid,
              dim3 &dimBlock,
@@ -193,12 +265,17 @@ int pick_dim(dim3 &dimGrid,
     unsigned int threads_1d = numthreads % blocksize;
 
     if (numthreads > (256 * blocksize)) {
-        blocks_y = numthreads / (256 * blocksize);
         blocks_x = 256;
+        blocks_y = numthreads / (256 * blocksize);
         threads_1d = blocksize;
     } else if (numthreads > blocksize) {
         blocks_x = numthreads / blocksize;
+        blocks_y = 1;
         threads_1d = blocksize;
+    } else {
+        blocks_x = 1;
+        blocks_y = 1;
+        threads_1d = numthreads;
     }
 
     unsigned int threads_used = blocks_y * blocks_x * threads_1d;
@@ -221,17 +298,25 @@ inline __device__ bool dev_is_bit_set(int i, unsigned char *bv) {
     return (bv[i >> 3] & bitMask);
 }
 
+inline bool is_bit_set(int i, unsigned int *bv) {
+    unsigned int word = bv[i >> 5];
+    unsigned int bitMask = 1 << (i & 31);
+    return (word & bitMask);
+}
 
 __global__ void GrepKernel(unsigned char *d_a,
                            unsigned char *dev_buckets,
                            unsigned char *dev_pos_bitmap,
-                           unsigned int char_offset)
+                           unsigned int char_offset,
+                           unsigned int* dev_cnt1,
+                           unsigned int* dev_cnt2)
 {
     __shared__ unsigned boxed[BLOCK_SIZE + HASH_LEN];
 
     int i = char_offset + (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x * blockDim.y + threadIdx.x;
 
     boxed[threadIdx.x] = sbox[d_a[i]];
+    
 
     /* Ugly, but let some threads pull in the remainder */
     /* TIME:  0.01 seconds */
@@ -253,6 +338,11 @@ __global__ void GrepKernel(unsigned char *d_a,
         uint32_t sbv = boxed[threadIdx.x+j];
         hval[0] ^= sbv;
         hval[1] ^= sbv;
+
+        // if (i == 0) {
+        //     printf("%c(%d), hval={%x %x}, sbv = %x\n", d_a[i+j], d_a[i+j], hval[0], hval[1], sbv);
+        // }
+
     }
 
 
@@ -262,13 +352,12 @@ __global__ void GrepKernel(unsigned char *d_a,
     tag += (tag == 0); 
     i1 = hval[1] & INDEXMASK;
     i2 = (i1 ^ (tag * 0x5bd1e995)) & INDEXMASK;
-
-    // BucketType *b1 = (BucketType *) (dev_buckets + i1 * sizeof(BucketType));
-    // uint64_t tagbits1 = *(uint64_t*) b1->tagbits_;
-
-    //BucketType b1 = *(BucketType *) (dev_buckets + i1 * sizeof(BucketType));
-
     
+    // if (i == 0) {
+    //     printf("idx:%d\ti1 = %05x,i2 = %05x, tag=%04x\n", i, i1, i2, tag);
+    // }
+    // read first 24 bytes from bucket i1
+    // including 8-byte tagbits and 16-byte bfbits
     ulong3 v1 = *(ulong3 *) (dev_buckets + i1 * sizeof(BucketType));
     BucketType* b1 = (BucketType*) &v1;
 
@@ -284,12 +373,26 @@ __global__ void GrepKernel(unsigned char *d_a,
         }
     }
 
-    if (!(dev_is_bit_set(i2 & BFMASK, bfbits1) &&
-          dev_is_bit_set(tag & BFMASK, bfbits1))) 
+
+
+#ifdef COUNTING
+    atomicAdd(dev_cnt1, 1);
+#endif
+
+#ifdef FILTERING
+    if (!(dev_is_bit_set(i2 & BFINDEXMASK, bfbits1) &&
+          dev_is_bit_set((i2 / num_bfbits) & BFINDEXMASK, bfbits1))) 
+//          dev_is_bit_set(tag & BFINDEXMASK, bfbits1))) 
         return;
+#endif
 
+#ifdef COUNTING
+    atomicAdd(dev_cnt2, 1);
+#endif
 
-    ulong3 v2 = *(ulong3 *) (dev_buckets + i2 * sizeof(BucketType));
+    // read first 8 bytes from bucket i1
+    // including 8-byte tagbits 
+    ulong1 v2 = *(ulong1 *) (dev_buckets + i2 * sizeof(BucketType));
     BucketType *b2 = (BucketType*) &v2;
 
     uint64_t tagbits2 = *(uint64_t*) (b2->tagbits_);
@@ -305,10 +408,8 @@ __global__ void GrepKernel(unsigned char *d_a,
     return;
 }
 
-__host__ void process_corpus(char* corpus_file) 
+void process_corpus(char* corpus_file) 
 {
-    char *pinnedBuf;
-
     printf("opening corpus file %s\n", corpus_file);
     size_t filesize;
     int f = getfile(corpus_file, &filesize);
@@ -353,7 +454,7 @@ __host__ void process_corpus(char* corpus_file)
         }
         numthreads = size;
 
-        printf("Executing grep on %d\n", size);
+        //printf("Executing grep on %d\n", size);
 
         read(fd, pinnedBuf + offset, size);
 
@@ -367,7 +468,11 @@ __host__ void process_corpus(char* corpus_file)
             GrepKernel<<<dimGrid, dimBlock, 0, streams[i]>>>(dev_corpus, 
                                                              dev_buckets,
                                                              dev_pos_bitmap, 
-                                                             offset + char_offset);
+                                                             offset + char_offset,
+                                                             dev_cnt1,
+                                                             dev_cnt2);
+
+
             //checkReportCudaStatus("GrepKernel");
             numthreads -= tu;
             char_offset += tu;
@@ -382,7 +487,77 @@ __host__ void process_corpus(char* corpus_file)
     close(f);
     close(fd);
 
+#ifdef COUNTING
+
+    unsigned int host_cnt1, host_cnt2;
+    exit_on_error("cudaMemcpy corpus results to host",
+                  cudaMemcpy(&host_cnt1, dev_cnt1,
+                             sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    exit_on_error("cudaMemcpy corpus results to host",
+                  cudaMemcpy(&host_cnt2, dev_cnt2,
+                             sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+    printf("total = %u, cnt1 = %u, cnt2 = %u\n", filesize, host_cnt1, host_cnt2);
+#endif
+
 }
+
+
+void print_positions(char *corpus_file)
+{
+    size_t filesize;
+    int f = getfile(corpus_file, &filesize);
+    if (f == -1) {
+        perror(corpus_file);
+        exit(-1);
+    }
+    char *buf = pinnedBuf;
+
+    filesize = min((unsigned long long)filesize, (unsigned long long)FILE_MAX);
+
+    unsigned int *bv = (unsigned int *)malloc(filesize / 8 + 1);
+
+    exit_on_error("cudaMemcpy corpus results to host",
+                  cudaMemcpy(bv, dev_pos_bitmap,
+                             filesize / 8, cudaMemcpyDeviceToHost));
+
+    int file_ints = filesize / 32;
+    int prev_end = -1;
+    for (int i = 0; i < file_ints; i++) {
+        if (bv[i]) {
+	        for (int j = ffs(bv[i]) - 1; j < 32; j++) {
+	            int offset = i*32 + j;
+	            if (is_bit_set(offset, bv)) {
+                    //cout << 32 * i + j << " ";
+            
+	                /* Find end of previous line */
+	                if (offset > prev_end && buf[offset] != '\n') {
+                        char *sol = ((char*)memrchr(buf, '\n', offset));
+                        int start_line;
+                        if (sol) {
+                            start_line = sol - buf;
+                        } else {
+                            start_line = 0;
+                        }
+
+	                    int end_line;
+                        char *eol = (char*)memchr(buf + offset, '\n', filesize - offset + 1);
+                        end_line = eol - buf;
+                        j += end_line - offset;
+	                    if (buf[start_line] == '\n') start_line++;
+	                    fwrite(buf + start_line, 1, end_line - start_line, stdout);
+	                    fputc('\n', stdout);
+	                    prev_end = end_line;
+	                }
+	            }
+	        }
+        }
+    }
+
+    close(f);
+}
+
 
 int main(int argc, char **argv)
 {
@@ -395,6 +570,7 @@ int main(int argc, char **argv)
     char *patterns_file = argv[1];
     char *corpus_file = argv[2];
 
+
     //cout << sizeof(HashfilterType::Bucket) << endl;
     //cout << sizeof(uint4) << " " << sizeof(ulong4) << endl;
     //return 0;
@@ -404,12 +580,19 @@ int main(int argc, char **argv)
     timing_stamp("start", false);
 
     setup(patterns_file);
+    //test_setup(patterns_file);
 
     timing_stamp("setup", false);
 
     process_corpus(corpus_file);
 
-    timing_stamp("processCorpus", false);
+    timing_stamp("grep corpus", false);
+
+    print_positions(corpus_file);
+
+    timing_stamp("copying out", false);
+
+    cleanup();
 
     timing_stamp("cleanup done", true);
 

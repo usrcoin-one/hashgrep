@@ -32,7 +32,7 @@ class CuckooHashtable {
     static const size_t INDEXMASK = num_buckets - 1;
     static const uint32_t TAGMASK = (1ULL << num_tagbits) - 1;
     static const uint32_t VALMASK = (1ULL << num_valbits) - 1;
-    static const uint32_t BFMASK  = num_bfbits - 1;
+    static const uint32_t BFINDEXMASK  = num_bfbits - 1;
      
 public:
     struct Bucket {
@@ -90,14 +90,14 @@ private:
     }
 
     inline void SetBit(const size_t i, const size_t k) {
-        size_t index = k & BFMASK;
+        size_t index = k & BFINDEXMASK;
         size_t offset = index >> 3;
         uint8_t bitMask = 1 << (index & 0x7);
         buckets_[i].bfbits_[offset] |= bitMask;
     }
 
     inline bool GetBit(const size_t i, const size_t k) {
-        size_t index = k & BFMASK;
+        size_t index = k & BFINDEXMASK;
         size_t offset = index >> 3;
         uint8_t bitMask = 1 << (index & 0x7);
         return buckets_[i].bfbits_[offset] & bitMask;
@@ -163,6 +163,9 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits, num_bfbits>::Put
 
     size_t i1 = IndexHash((char*) &key);
     size_t i2 = AltIndex(i1, tag);
+
+    // printf("PUT: key=%x\n", key);
+    // printf("PUT: i1 = %x, i2 = %x, tag= %x\n", i1, i2, tag);
 
     size_t i = 0;
     size_t k = bucket_size;
@@ -260,9 +263,26 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits, num_bfbits>::Bui
             uint32_t tag = ReadTag(i, j);
             if (tag) {
                 size_t i2 = AltIndex(i, tag);
-                SetBit(i2, tag & BFMASK);
-                SetBit(i2, i & BFMASK);
+//                SetBit(i2, tag & BFINDEXMASK);
+                SetBit(i2, i & BFINDEXMASK);
+                SetBit(i2, (i / num_bfbits) & BFINDEXMASK);
             }
         }
     }
+
+    
+    // size_t totalones = 0;
+    // for (size_t i = 0; i < num_buckets; i ++) {
+    //     cout << i << ":";
+    //     for (size_t k = 0; k < num_bfbits; k ++) {
+    //         if (GetBit(i, k)) {
+    //             totalones ++;
+    //             cout << k << " ";
+    //         }
+    //     }
+    //     cout << endl;
+    // }
+
+    // printf("bf load factor: %.2f\n", totalones * 1.0 / num_buckets / num_bfbits);
+    
 }
