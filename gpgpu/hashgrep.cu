@@ -61,8 +61,8 @@ extern "C" {
 #define DEF_STRBUF_SIZE 0xa000000
 #endif
 
-//#define COUNTING
-//#define FILTERING
+//#define ENABLE_COUNTING
+#define ENABLE_FILTERING
 
 char *pinnedBuf;
 char *strbuf;
@@ -187,7 +187,7 @@ void setup(char* pattern_file)
                              cudaMemcpyHostToDevice));
 
 
-#ifdef COUNTING
+#ifdef ENABLE_COUNTING
     exit_on_error("cudaMalloc dev_cnt1",
                   cudaMalloc((void **) &dev_cnt1, 
                              sizeof(unsigned int)));
@@ -214,7 +214,7 @@ void cleanup()
     cudaFree(dev_buckets);
     cudaFreeHost(pinnedBuf);
 
-#ifdef COUNTING
+#ifdef ENABLE_COUNTING
     cudaFree(dev_cnt1);
     cudaFree(dev_cnt2);
 #endif
@@ -358,7 +358,6 @@ __global__ void GrepKernel(unsigned char *d_a,
     ulong3 v1 = *(ulong3 *) (dev_buckets + i1 * sizeof(BucketType));
     BucketType* b1 = (BucketType*) &v1;
     uint16_t *tagbits1 = (uint16_t*) (b1->tagbits_);
-    unsigned char* bfbits1 = b1->bfbits_;
 
     for (int j = 0; j < bucket_size; j ++) {
         uint32_t tag1 = tagbits1[j] & TAGMASK;
@@ -374,17 +373,18 @@ __global__ void GrepKernel(unsigned char *d_a,
         }
     }
 
-#ifdef COUNTING
+#ifdef ENABLE_COUNTING
     atomicAdd(dev_cnt1, 1);
 #endif
 
-#ifdef FILTERING
+#ifdef ENABLE_FILTERING
+    unsigned char* bfbits1 = b1->bfbits_;
     if (!(dev_is_bit_set(i2 & BFINDEXMASK, bfbits1) &&
           dev_is_bit_set((i2 / num_bfbits) & BFINDEXMASK, bfbits1))) 
         return;
 #endif
 
-#ifdef COUNTING
+#ifdef ENABLE_COUNTING
     atomicAdd(dev_cnt2, 1);
 #endif
 
@@ -492,7 +492,7 @@ void process_corpus(char* corpus_file)
 
     printf("GrepKernel done\n");
 
-#ifdef COUNTING
+#ifdef ENABLE_COUNTING
 
     unsigned int host_cnt1, host_cnt2;
     exit_on_error("cudaMemcpy dev_cnt1 to host_cnt1",
@@ -529,20 +529,18 @@ void print_positions(char *corpus_file)
         exit(-1);
     }
 
-    printf("bv=%p, dev_strbuf=%p, dev_pos_bitmap=%p\n", bv, dev_strbuf, dev_pos_bitmap);
     exit_on_error("cudaMemcpy corpus results to host",
                   cudaMemcpy(bv, dev_pos_bitmap,
                              filesize / 8, cudaMemcpyDeviceToHost));
 
     int file_ints = filesize / 32;
     int prev_end = -1;
+    int num_matched = 0;
     for (int i = 0; i < file_ints; i++) {
         if (bv[i]) {
 	        for (int j = ffs(bv[i]) - 1; j < 32; j++) {
 	            int offset = i*32 + j;
 	            if (is_bit_set(offset, bv)) {
-                    //cout << 32 * i + j << " ";
-            
 	                /* Find end of previous line */
 	                if (offset > prev_end && buf[offset] != '\n') {
                         char *sol = ((char*)memrchr(buf, '\n', offset));
@@ -561,6 +559,7 @@ void print_positions(char *corpus_file)
 	                    fwrite(buf + start_line, 1, end_line - start_line, stdout);
 	                    fputc('\n', stdout);
 	                    prev_end = end_line;
+                        num_matched ++;
 	                }
 	            }
 	        }
@@ -568,6 +567,8 @@ void print_positions(char *corpus_file)
     }
 
     close(f);
+
+    printf("\n\n%d lines in corpus matched\n", num_matched);
 }
 
 
@@ -606,22 +607,6 @@ int main(int argc, char **argv)
     timing_stamp("grep corpus", false);
 
     print_positions(corpus_file);
-    // {
-    //     size_t filesize;
-    //     int f = getfile(corpus_file, &filesize);
-    //     if (f == -1) {
-    //         perror(corpus_file);
-    //         exit(-1);
-    //     }
-    //     char *buf = pinnedBuf;
-
-    //     filesize = min((unsigned long long)filesize, (unsigned long long)FILE_MAX);
-    //     unsigned char *bv = (unsigned char *)malloc(filesize / 8 + 1);
-    //     printf("bv=%p, dev_strbuf=%p, dev_pos_bitmap=%p\n", bv, dev_strbuf, dev_pos_bitmap);
-    //     exit_on_error("cudaMemcpy corpus results to host",
-    //                   cudaMemcpy(bv, dev_pos_bitmap, 
-    //                              filesize / 8, cudaMemcpyDeviceToHost));
-    // }
 
     timing_stamp("copying out", false);
 
