@@ -54,8 +54,8 @@ extern "C" {
 #define BLOCK_SIZE 256
 #define HASH_LEN 19
 #define FILE_MAX 6710886400
-//#define NR_STREAMS 10
-#define NR_STREAMS 1
+#define NR_STREAMS 10
+//#define NR_STREAMS 1
 
 #ifndef DEF_STRBUF_SIZE
 #define DEF_STRBUF_SIZE 0xa000000
@@ -66,7 +66,7 @@ extern "C" {
 
 char *pinnedBuf;
 char *strbuf;
-size_t strbuf_used = 1;
+uint32_t strbuf_used = 4;
 
 
 #define num_indexbits 20
@@ -155,6 +155,9 @@ void setup(char* pattern_file)
             exit(-1);
         }
         strbuf_used += pattern.size() + sizeof(uint32_t) + 1;
+        if (strbuf_used & 0x3) {
+            strbuf_used += 4 - (strbuf_used & 0x3);
+        }
             
     }
     inPhrases.close();
@@ -243,7 +246,7 @@ int pick_dim(dim3 &dimGrid,
 
     unsigned int threads_used = blocks_y * blocks_x * threads_1d;
     numthreads -= threads_used;
-    //printf("pick_dim %d %d %d\n", blocks_y, blocks_x, threads_1d);
+      //printf("pick_dim %d %d %d\n", blocks_y, blocks_x, threads_1d);
     dimGrid = dim3(blocks_x, blocks_y);
     dimBlock = dim3(threads_1d);
     return threads_used;
@@ -267,11 +270,44 @@ inline bool is_bit_set(int i, unsigned int *bv) {
     return (word & bitMask);
 }
 
+__device__ bool dev_cmp_str(int i,
+                           uint p,
+                           unsigned char* d_a,
+                           unsigned char* dev_strbuf,
+                           uint32_t strbuf_used)
+{
+    while (p != 0) {
+        unsigned char* q = dev_strbuf + p + sizeof(uint);
+        if (((p + sizeof(uint)) >= strbuf_used) ||
+            (p & 03)) {
+            printf("hey, sth wrong here! i = %d, p = %u, strbuf_used = %u\n",i,  p, strbuf_used);
+            return false;
+        }
+        int l = 0;
+        bool match = true;
+        while (q[l] != '\0') {
+            if (d_a[i + l] != q[l]) {
+                match = false;
+                break;
+            }
+            l ++;
+        }
+
+        if (match) {
+            
+            return true;
+        }
+        p = *(uint*) ( dev_strbuf + p);
+    }
+    return false;
+}
+
 __global__ void GrepKernel(unsigned char *d_a,
                            unsigned char *dev_buckets,
                            unsigned char *dev_strbuf,
                            unsigned char *dev_pos_bitmap,
                            unsigned int char_offset,
+                           uint32_t strbuf_used,
                            unsigned int* dev_cnt1,
                            unsigned int* dev_cnt2)
 {
@@ -323,52 +359,21 @@ __global__ void GrepKernel(unsigned char *d_a,
     BucketType* b1 = (BucketType*) &v1;
     uint16_t *tagbits1 = (uint16_t*) (b1->tagbits_);
     unsigned char* bfbits1 = b1->bfbits_;
-    // if (i == 0) 
-    // {
-    //     printf("i=%d,tagbits = %x %x %x %x\n", i, tagbits1[0], tagbits1[1], tagbits1[2], tagbits1[3]);
-    // }
 
     for (int j = 0; j < bucket_size; j ++) {
-
         uint32_t tag1 = tagbits1[j] & TAGMASK;
-        // if (i == 0) 
-        // {
-        //     printf("BFINDEXMASK=%x, TAGMASK=%x\n", BFINDEXMASK, TAGMASK);
-        //     printf("i=%d, j=%d,tagbits = %x\n", i, j, tag1);
-        // }
 
         if (tag1 == tag) {
-            printf("i=%d, tag hit!\n",i);
             int val_offset = (int) offsetof(BucketType, valbits_) + j * sizeof(uint32_t);
             uint p = *(uint*) (dev_buckets + i1 * sizeof(BucketType) + val_offset);
-
-            while (p != 0) {
-                 unsigned char* q = dev_strbuf + p + sizeof(uint32_t);
-                 printf("i=%d, p=%d\n", i, p);
-                 int l = 0;
-                 bool match = true;
-                 while (q[l] != '\0') {
-                     printf("i=%d, comparing %c %c\n", i, d_a[i + l], q[l]);
-                     if (d_a[i + l] != q[l]) {
-                         match = false;
-                         break;
-                     }
-                     l ++;
-                 }
-                 if (match) {
-                     printf("===========i=%d,1 matched!\n", i);
-                     printf("===========set offset %d @ %p\n", i, dev_pos_bitmap);
-                     dev_set_bit(i, dev_pos_bitmap);
-                     break;
-                 }
-                 p = *(uint*) (dev_strbuf + p);
+            bool match = dev_cmp_str(i, p, d_a, dev_strbuf, strbuf_used);
+            if (match) {
+                dev_set_bit(i, dev_pos_bitmap);
+                return;
             }
-            // dev_set_bit(i, dev_pos_bitmap);
-            // return;
         }
     }
 
-    return;
 #ifdef COUNTING
     atomicAdd(dev_cnt1, 1);
 #endif
@@ -387,16 +392,18 @@ __global__ void GrepKernel(unsigned char *d_a,
     // including 8-byte tagbits 
     ulong1 v2 = *(ulong1 *) (dev_buckets + i2 * sizeof(BucketType));
     BucketType *b2 = (BucketType*) &v2;
-
-    uint64_t tagbits2 = *(uint64_t*) (b2->tagbits_);
+    uint16_t *tagbits2 = (uint16_t*) (b2->tagbits_);
 
     for (int j = 0; j < bucket_size; j ++) {
-        uint32_t tag2 = tagbits2 & TAGMASK;
-        tagbits2 >>= num_tagbits;
+        uint32_t tag2 = tagbits2[j] & TAGMASK;
         if (tag2 == tag) {   
-            //printf("2 matched! i = %d\n", i);
-            dev_set_bit(i, dev_pos_bitmap);
-            return;
+            int val_offset = (int) offsetof(BucketType, valbits_) + j * sizeof(uint32_t);
+            uint p = *(uint*) (dev_buckets + i2 * sizeof(BucketType) + val_offset);
+            bool match = dev_cmp_str(i, p, d_a, dev_strbuf, strbuf_used);
+            if (match) {
+                dev_set_bit(i, dev_pos_bitmap);
+                return;
+            }
         }
     }
     return;
@@ -464,6 +471,7 @@ void process_corpus(char* corpus_file)
                                                              dev_strbuf,
                                                              dev_pos_bitmap, 
                                                              offset + char_offset,
+                                                             strbuf_used,
                                                              dev_cnt1,
                                                              dev_cnt2);
 
@@ -521,7 +529,7 @@ void print_positions(char *corpus_file)
         exit(-1);
     }
 
-    printf("bv=%p, dev_pos_bitmap=%p\n", bv, dev_pos_bitmap);
+    printf("bv=%p, dev_strbuf=%p, dev_pos_bitmap=%p\n", bv, dev_strbuf, dev_pos_bitmap);
     exit_on_error("cudaMemcpy corpus results to host",
                   cudaMemcpy(bv, dev_pos_bitmap,
                              filesize / 8, cudaMemcpyDeviceToHost));
@@ -581,11 +589,15 @@ int main(int argc, char **argv)
     //return 0;
 
     strbuf = new char[DEF_STRBUF_SIZE];
+    if (!strbuf) {
+        perror("cannot allocate host memory for strbuf\n");
+        exit(-1);
+    }
+    memset(strbuf, 0, DEF_STRBUF_SIZE);
 
     timing_stamp("start", false);
 
     setup(patterns_file);
-    //test_setup(patterns_file);
 
     timing_stamp("setup", false);
 
@@ -594,6 +606,22 @@ int main(int argc, char **argv)
     timing_stamp("grep corpus", false);
 
     print_positions(corpus_file);
+    // {
+    //     size_t filesize;
+    //     int f = getfile(corpus_file, &filesize);
+    //     if (f == -1) {
+    //         perror(corpus_file);
+    //         exit(-1);
+    //     }
+    //     char *buf = pinnedBuf;
+
+    //     filesize = min((unsigned long long)filesize, (unsigned long long)FILE_MAX);
+    //     unsigned char *bv = (unsigned char *)malloc(filesize / 8 + 1);
+    //     printf("bv=%p, dev_strbuf=%p, dev_pos_bitmap=%p\n", bv, dev_strbuf, dev_pos_bitmap);
+    //     exit_on_error("cudaMemcpy corpus results to host",
+    //                   cudaMemcpy(bv, dev_pos_bitmap, 
+    //                              filesize / 8, cudaMemcpyDeviceToHost));
+    // }
 
     timing_stamp("copying out", false);
 
