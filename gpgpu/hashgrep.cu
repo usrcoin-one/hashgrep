@@ -133,9 +133,6 @@ void setup(char* pattern_file)
             hval[1] ^= sbv;
         }
         
-        // printf("\n");
-        // printf("hal={%x %x}\n", hval[0], hval[1]);
-
         uint32_t p;
         if (hashfilter.Get(*((uint64_t*) hval), p) == Ok) {
             assert(p > 0);
@@ -144,6 +141,7 @@ void setup(char* pattern_file)
 
         if (strbuf_used >= DEF_STRBUF_SIZE)  {
             perror("Not enough strbuf, please make DEF_STRBUF_SIZE larger ");
+            exit(-1);
         }
 
         char* cstr = strbuf + strbuf_used;
@@ -270,6 +268,20 @@ inline bool is_bit_set(int i, unsigned int *bv) {
     return (word & bitMask);
 }
 
+
+inline __device__ bool dev_strcmp(unsigned char* text, 
+                                  unsigned char* patt) 
+{
+    int k = 0;
+    while (patt[k] != '\0') {
+        if (text[k] != patt[k])
+            return false;
+        k ++;
+    }
+    return true;
+}
+
+
 __device__ bool dev_cmp_str(int i,
                            uint p,
                            unsigned char* d_a,
@@ -283,18 +295,8 @@ __device__ bool dev_cmp_str(int i,
             printf("hey, sth wrong here! i = %d, p = %u, strbuf_used = %u\n",i,  p, strbuf_used);
             return false;
         }
-        int l = 0;
-        bool match = true;
-        while (q[l] != '\0') {
-            if (d_a[i + l] != q[l]) {
-                match = false;
-                break;
-            }
-            l ++;
-        }
-
+        bool match = dev_strcmp(d_a + i, q);
         if (match) {
-            
             return true;
         }
         p = *(uint*) ( dev_strbuf + p);
@@ -347,13 +349,11 @@ __global__ void GrepKernel(unsigned char *d_a,
     i1 = hval[1] & INDEXMASK;
     i2 = (i1 ^ (tag * 0x5bd1e995)) & INDEXMASK;
 
-    // printf("i=%d,\thval={%08x, %08x},i1 =%05x,i2=%05x,tag=%04x\n",i, hval[0], hval[1], i1, i2, tag);
-    // read first 24 bytes from bucket i1
+
+    // don't know why but this turns out slow ...
+    // "BucketType* b1= (BucketType*) (dev_buckets + i1 * sizeof(BucketType));"
+    // so I read first 24 bytes from bucket i1 as a ulong3
     // including 8-byte tagbits and 16-byte bfbits
-
-    // this turns out slow ...
-    //BucketType* b1= (BucketType*) (dev_buckets + i1 * sizeof(BucketType));
-
 
     ulong3 v1 = *(ulong3 *) (dev_buckets + i1 * sizeof(BucketType));
     BucketType* b1 = (BucketType*) &v1;
@@ -366,6 +366,7 @@ __global__ void GrepKernel(unsigned char *d_a,
             int val_offset = (int) offsetof(BucketType, valbits_) + j * sizeof(uint32_t);
             uint p = *(uint*) (dev_buckets + i1 * sizeof(BucketType) + val_offset);
             bool match = dev_cmp_str(i, p, d_a, dev_strbuf, strbuf_used);
+            // bool match = true;
             if (match) {
                 dev_set_bit(i, dev_pos_bitmap);
                 return;
@@ -400,6 +401,7 @@ __global__ void GrepKernel(unsigned char *d_a,
             int val_offset = (int) offsetof(BucketType, valbits_) + j * sizeof(uint32_t);
             uint p = *(uint*) (dev_buckets + i2 * sizeof(BucketType) + val_offset);
             bool match = dev_cmp_str(i, p, d_a, dev_strbuf, strbuf_used);
+            //bool match = true;
             if (match) {
                 dev_set_bit(i, dev_pos_bitmap);
                 return;
