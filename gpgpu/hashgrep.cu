@@ -54,8 +54,8 @@ extern "C" {
 #define BLOCK_SIZE 256
 #define HASH_LEN 19
 #define FILE_MAX 6710886400
-#define NR_STREAMS 10
-//#define NR_STREAMS 1
+//#define NR_STREAMS 10
+#define NR_STREAMS 1
 
 #ifndef DEF_STRBUF_SIZE
 #define DEF_STRBUF_SIZE 0xa000000
@@ -63,10 +63,12 @@ extern "C" {
 
 //#define ENABLE_COUNTING
 #define ENABLE_FILTERING
+#define MEM_ALIGNMENT 8
+
 
 char *pinnedBuf;
 char *strbuf;
-uint32_t strbuf_used = 4;
+uint32_t strbuf_used = MEM_ALIGNMENT;
 
 
 #define num_indexbits 20
@@ -98,6 +100,15 @@ void exit_on_error(const char *name, cudaError_t err) {
     }
 }
 
+
+void checkReportCudaStatus(const char *name) {
+    cudaError_t err = cudaGetLastError();
+    printf("CudaStatus %s: ", name);
+    if (err) printf("Error: %s\n", cudaGetErrorString(err));
+    else printf("Success\n");
+}
+
+
 inline uint32_t  rol32(unsigned int word, int shift)
 {
     return (word << shift) | (word >> (32 - shift));
@@ -115,6 +126,14 @@ void setup(char* pattern_file)
         cerr << "Can not open phrase file " << pattern_file << endl;
         exit(-1);
     }
+
+    char* logbuf = new char[DEF_STRBUF_SIZE];
+    uint32_t logbuf_used = MEM_ALIGNMENT;
+    if (!logbuf) {
+        perror("cannot allocate host memory for strbuf\n");
+        exit(-1);
+    }
+    memset(logbuf, 0, DEF_STRBUF_SIZE);
 
     string pattern;
     while (getline(inPhrases, pattern)) {
@@ -139,28 +158,76 @@ void setup(char* pattern_file)
         } else
             p = 0;
 
-        if (strbuf_used >= DEF_STRBUF_SIZE)  {
-            perror("Not enough strbuf, please make DEF_STRBUF_SIZE larger ");
+        if (logbuf_used >= DEF_STRBUF_SIZE)  {
+            perror("Not enough memory for logbuf, please make DEF_STRBUF_SIZE larger ");
             exit(-1);
         }
 
-        char* cstr = strbuf + strbuf_used;
+        char* cstr = logbuf + logbuf_used;
         memcpy(cstr, &p, sizeof(uint32_t));
         strcpy(cstr + sizeof(uint32_t), pattern.c_str());
 
-        if (hashfilter.Put(*((uint64_t*) hval), strbuf_used) != Ok) {
+        if (hashfilter.Put(*((uint64_t*) hval), logbuf_used) != Ok) {
             perror("Error while buiding hash table");
             exit(-1);
         }
-        strbuf_used += pattern.size() + sizeof(uint32_t) + 1;
-        if (strbuf_used & 0x3) {
-            strbuf_used += 4 - (strbuf_used & 0x3);
-        }
-            
+        logbuf_used += pattern.size() + sizeof(uint32_t);// + 1;
+        logbuf_used = (logbuf_used | (MEM_ALIGNMENT - 1)) + 1;
+        //printf("logbuf_used = %u\n", logbuf_used);
     }
     inPhrases.close();
    
     hashfilter.BuildBF();
+
+    strbuf = new char[DEF_STRBUF_SIZE];
+    strbuf_used = MEM_ALIGNMENT;
+    if (!strbuf) {
+        perror("cannot allocate host memory for strbuf\n");
+        exit(-1);
+    }
+    memset(strbuf, 0, DEF_STRBUF_SIZE);
+
+    int total = 0;
+    for (int i = 0; i < hashfilter.num_buckets; i++) {
+        for (int j = 0; j < hashfilter.bucket_size; j++) {
+            uint32_t p = hashfilter.ReadValue(i, j);
+            if (!p) continue;
+            //printf("(%u,%u) %x\n", i, j, p);
+            assert(p < logbuf_used);
+            assert((p & (MEM_ALIGNMENT - 1)) == 0);
+
+
+            uint32_t val = strbuf_used;
+            strbuf_used += sizeof(uint32_t);
+            uint32_t num = 0;
+            while (p) {
+                num ++;
+                char* q = logbuf + p + sizeof(uint32_t);
+                int len = strlen(q);
+                strcpy(strbuf + strbuf_used, q);
+                strbuf_used += len + 1;
+                p = *(uint32_t*) ( logbuf + p);
+
+            }
+            memcpy(strbuf + val, &num, sizeof(uint32_t));
+            strbuf_used = (strbuf_used | (MEM_ALIGNMENT - 1)) + 1;
+
+            hashfilter.WriteValue(i, j, val);
+            total += num;
+
+            // printf("(%u,%u) %u strings, val=%u\n", i, j, num, val);
+            // int l = 0;
+            // while (num > 0) {
+            //     char c = strbuf[val + sizeof(uint32_t) + l];
+            //     printf("%c", c);
+            //     if (c == '\0') {
+            //         printf("\n");
+            //         num --;
+            //     }
+            //     l ++;
+            // }
+        }
+    }
 
     size_t len = hashfilter.SizeInBytes();
 
@@ -203,6 +270,7 @@ void setup(char* pattern_file)
 
 #endif
 
+    delete [] logbuf;
 }
 
 
@@ -252,9 +320,11 @@ int pick_dim(dim3 &dimGrid,
 
 
 inline __device__ void dev_set_bit(int i, unsigned char *bv) {
-    unsigned int *p = (unsigned int *)bv;
-    unsigned int bitMask = 1 << (i & 31);
-    atomicOr(&p[i >> 5], bitMask);
+    //unsigned int *p = (unsigned int *)bv;
+    //unsigned int bitMask = 1 << (i & 31);
+    //atomicOr(&p[i >> 5], bitMask);
+    unsigned int bitMask = 1 << (i & 7);
+    bv[i >> 3] |= bitMask;
 }
 
 inline __device__ bool dev_is_bit_set(int i, unsigned char *bv) {
@@ -269,37 +339,54 @@ inline bool is_bit_set(int i, unsigned int *bv) {
 }
 
 
-inline __device__ bool dev_strcmp(unsigned char* text, 
-                                  unsigned char* patt) 
+// inline __device__ bool dev_strcmp(unsigned char* text, 
+//                                   unsigned char* patt) 
+// {
+//     int k = 0;
+//     while (patt[k] != '\0') {
+//         if (text[k] != patt[k])
+//             return false;
+//         k ++;
+//     }
+//     return true;
+// }
+
+
+__device__ bool dev_check_str(int i,
+                              uint val,
+                              unsigned char* text,
+                              unsigned char* dev_strbuf)
 {
+    
+    uint num = *(uint*) (dev_strbuf + val);
+    unsigned char *q = dev_strbuf + val + sizeof(uint32_t);
+    int l = 0;
     int k = 0;
-    while (patt[k] != '\0') {
-        if (text[k] != patt[k])
-            return false;
-        k ++;
-    }
-    return true;
-}
+    bool match = true;
+    int watch = 210414200;
+    
+    while (num) {
+        if (q[l] == '\0') {
+            //if (i == watch)
+            //printf("i = %u, num = %u, %c, %d\n", i , num, q[l], match);
 
+            if (match) {
+                //printf("match!!\n");
+                return true;
+            }
+            match = true;
+            k = 0;
+            num --;
+        } else {
 
-__device__ bool dev_cmp_str(int i,
-                           uint p,
-                           unsigned char* d_a,
-                           unsigned char* dev_strbuf,
-                           uint32_t strbuf_used)
-{
-    while (p != 0) {
-        unsigned char* q = dev_strbuf + p + sizeof(uint);
-        if (((p + sizeof(uint)) >= strbuf_used) ||
-            (p & 03)) {
-            printf("hey, sth wrong here! i = %d, p = %u, strbuf_used = %u\n",i,  p, strbuf_used);
-            return false;
+            if (q[l] != text[k]) {
+                match = false;
+            }
+            // if (i == watch)
+            //     printf("i = %u, comparing %c %c, %d\n", i, q[l], text[k], match);
+            k ++;
         }
-        bool match = dev_strcmp(d_a + i, q);
-        if (match) {
-            return true;
-        }
-        p = *(uint*) ( dev_strbuf + p);
+        l ++;
     }
     return false;
 }
@@ -349,6 +436,8 @@ __global__ void GrepKernel(unsigned char *d_a,
     i1 = hval[1] & INDEXMASK;
     i2 = (i1 ^ (tag * 0x5bd1e995)) & INDEXMASK;
 
+    // for test
+    //dev_set_bit(i, dev_pos_bitmap);
 
     // don't know why but this turns out slow ...
     // "BucketType* b1= (BucketType*) (dev_buckets + i1 * sizeof(BucketType));"
@@ -365,10 +454,12 @@ __global__ void GrepKernel(unsigned char *d_a,
         if (tag1 == tag) {
             int val_offset = (int) offsetof(BucketType, valbits_) + j * sizeof(uint32_t);
             uint p = *(uint*) (dev_buckets + i1 * sizeof(BucketType) + val_offset);
-            bool match = dev_cmp_str(i, p, d_a, dev_strbuf, strbuf_used);
+            bool match = dev_check_str(i, p, d_a + i, dev_strbuf);
             // bool match = true;
             if (match) {
+                //printf("=====i=%d, set!\n", i);
                 dev_set_bit(i, dev_pos_bitmap);
+                //printf("%d\n", dev_is_bit_set(i, dev_pos_bitmap));
                 return;
             }
         }
@@ -400,9 +491,10 @@ __global__ void GrepKernel(unsigned char *d_a,
         if (tag2 == tag) {   
             int val_offset = (int) offsetof(BucketType, valbits_) + j * sizeof(uint32_t);
             uint p = *(uint*) (dev_buckets + i2 * sizeof(BucketType) + val_offset);
-            bool match = dev_cmp_str(i, p, d_a, dev_strbuf, strbuf_used);
+            bool match = dev_check_str(i, p, d_a + i, dev_strbuf);
             //bool match = true;
             if (match) {
+                //printf("=====i=%d, set!\n", i);
                 dev_set_bit(i, dev_pos_bitmap);
                 return;
             }
@@ -478,7 +570,7 @@ void process_corpus(char* corpus_file)
                                                              dev_cnt2);
 
 
-            //checkReportCudaStatus("GrepKernel");
+            checkReportCudaStatus("GrepKernel");
             numthreads -= tu;
             char_offset += tu;
         }
@@ -533,12 +625,14 @@ void print_positions(char *corpus_file)
 
     exit_on_error("cudaMemcpy corpus results to host",
                   cudaMemcpy(bv, dev_pos_bitmap,
-                             filesize / 8, cudaMemcpyDeviceToHost));
+                             filesize / 8 + 1, cudaMemcpyDeviceToHost));
 
     int file_ints = filesize / 32;
     int prev_end = -1;
     int num_matched = 0;
+    printf("filesize = %d, file_ints = %d\n", filesize, file_ints);
     for (int i = 0; i < file_ints; i++) {
+        //printf("bv[%d] = %d\n", i, bv[i]);
         if (bv[i]) {
 	        for (int j = ffs(bv[i]) - 1; j < 32; j++) {
 	            int offset = i*32 + j;
@@ -590,13 +684,6 @@ int main(int argc, char **argv)
     //cout << sizeof(uint) << " " << sizeof(ulong4) << endl;
     //cout << offsetof(BucketType, valbits_) << endl;
     //return 0;
-
-    strbuf = new char[DEF_STRBUF_SIZE];
-    if (!strbuf) {
-        perror("cannot allocate host memory for strbuf\n");
-        exit(-1);
-    }
-    memset(strbuf, 0, DEF_STRBUF_SIZE);
 
     timing_stamp("start", false);
 

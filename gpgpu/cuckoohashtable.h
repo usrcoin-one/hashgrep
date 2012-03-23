@@ -22,7 +22,7 @@ enum Status {
 
 template <typename KeyType, typename ValueType, size_t num_tagbits, size_t num_indexbits, size_t num_bfbits>
 class CuckooHashtable {
-
+public:
     static const size_t bucket_size = 4;
 
     static const size_t num_keybits = sizeof(KeyType) << 3;
@@ -34,7 +34,7 @@ class CuckooHashtable {
     static const uint32_t VALMASK = (1ULL << num_valbits) - 1;
     static const uint32_t BFINDEXMASK  = num_bfbits - 1;
      
-public:
+//public:
     struct Bucket {
         unsigned char tagbits_[num_tagbits * bucket_size / 8];
         unsigned char bfbits_[num_bfbits / 8];
@@ -43,7 +43,7 @@ public:
 
     Bucket* buckets_;
 
-private:
+//private:
     size_t num_keys_;
     static const size_t max_num_keys_ = bucket_size * num_buckets;
 
@@ -269,20 +269,4 @@ CuckooHashtable<KeyType, ValueType, num_tagbits, num_indexbits, num_bfbits>::Bui
             }
         }
     }
-
-    
-    // size_t totalones = 0;
-    // for (size_t i = 0; i < num_buckets; i ++) {
-    //     cout << i << ":";
-    //     for (size_t k = 0; k < num_bfbits; k ++) {
-    //         if (GetBit(i, k)) {
-    //             totalones ++;
-    //             cout << k << " ";
-    //         }
-    //     }
-    //     cout << endl;
-    // }
-
-    // printf("bf load factor: %.2f\n", totalones * 1.0 / num_buckets / num_bfbits);
-    
 }
